@@ -1,0 +1,40 @@
+{
+  "name": "@tty-pt/chaff",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Universal Node.js and Browser WebAssembly bindings for libchaff N-dimensional procedural noise and lattice stepping",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "include",
+    "*.pc",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build:native": "mkdir -p build/Release && gcc -O3 -fPIC -shared -I/usr/include/node -I../include native/chaff_napi.c -L/usr/lib -lxxhash -o build/Release/chaff_node.node 2>/dev/null || true",
+    "build:wasm": "make -C .. wasm",
+    "build": "npm run build:native && npm run build:wasm",
+    "test": "node --test tests/chaff.test.mjs"
+  },
+  "peerDependencies": {
+    "@tty-pt/stele": ">=1.5.0"
+  },
+  "devDependencies": {
+    "@tty-pt/stele": "^1.5.2"
+  },
+  "keywords": [
+    "chaff",
+    "noise",
+    "procedural",
+    "perlin",
+    "fractal",
+    "terrain",
+    "wasm",
+    "webassembly",
+    "n-dimensional"
+  ],
+  "author": "tty-pt",
+  "license": "BSD-2-Clause"
+}

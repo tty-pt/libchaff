@@ -1,0 +1,10 @@
+prefix=/usr/local
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: libchaff
+Description: Pure-C N-dimensional procedural noise and multi-scale lattice stepper library
+Version: 1.0.0
+Libs: -L${libdir} -lchaff -lxxhash
+Cflags: -I${includedir}

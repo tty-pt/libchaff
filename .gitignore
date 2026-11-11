@@ -1,0 +1,9 @@
+*.o
+*.d
+*.a
+*.so
+/bin/
+/lib/
+npm/build/
+npm/dist/*.wasm
+npm/node_modules/
