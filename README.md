@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="../../htdocs/assets/logo.png" alt="libchaff logo" width="220" onerror="this.style.display='none'"/>
+  <img src="assets/logo.png" alt="libchaff logo" width="220" />
 </p>
 
-# libchaff / libnoise
+# libchaff
 
 [![npm](https://img.shields.io/badge/npm-@tty-pt/chaff-CB3837?logo=npm)](npm/README.md)
 [![C99](https://img.shields.io/badge/C-C99-555?logo=c)](#)
@@ -447,6 +447,34 @@ The resulting chunk system can be queried with column-major $4 \times 4$ ModelVi
 
 ---
 
-## 12. License
+## 12. Installation & Build
+
+### Prebuilt Packages
+Prebuilt packages for Linux (APT / Alpine / Arch / Fedora-RHEL), macOS (Homebrew), Windows (winget / MSYS2), and OpenBSD are distributed via [tty.pt packages](https://github.com/tty-pt/ci/blob/main/docs/install.md). Use **libchaff** as the package name.
+
+### Build from Source
+```sh
+make              # builds lib/libchaff.so and lib/libnoise.so
+make wasm         # builds npm/dist/chaff.wasm
+make test         # runs the 35-assertion C & GLSL parity verification suite
+make npm-test     # runs the Node.js & WebAssembly test suite
+sudo make install # install headers and libraries to system
+```
+
+---
+
+## 13. JavaScript & WebAssembly Bindings (`@tty-pt/chaff`)
+
+For browser, Node.js, and WebGL2 shader pipelines, `libchaff` ships an isomorphic WebAssembly and GLSL package on npm:
+
+```sh
+npm install @tty-pt/chaff
+```
+
+See [npm/README.md](npm/README.md) for the full TypeScript, WebAssembly, and GLSL shader API reference.
+
+---
+
+## License
 
 CC BY-NC-SA 4.0 — Author: Paulo Quirino <q@qnixsoft.com>
