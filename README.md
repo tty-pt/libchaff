@@ -4,7 +4,7 @@
 
 # libchaff
 
-[![npm](https://img.shields.io/badge/npm-@tty-pt/chaff-CB3837?logo=npm)](npm/README.md)
+[![npm](https://img.shields.io/badge/npm-@tty--pt/chaff-CB3837?logo=npm)](npm/README.md)
 [![C99](https://img.shields.io/badge/C-C99-555?logo=c)](#)
 [![CC BY-NC-SA 4.0](https://img.shields.io/badge/License-CC%20BY--NC--SA%204.0-blue)](#)
 [![Zero Floats](https://img.shields.io/badge/FPU-zero%20floats-16A34A)](#)
