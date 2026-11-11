@@ -652,7 +652,7 @@ chaff_sample_mega_2d(int32_t rx, int32_t ry, unsigned shift, unsigned seed)
  * applying ridged multifractal folding on octaves >= `ridged_min_shift` (pass 255 to disable)
  * and rotating coordinates by `(cos_q15, sin_q15)` between octaves. */
 static inline int32_t
-chaff_fbm_rotated_2d_q12_4(int16_t x, int16_t y,
+chaff_fbm_rotated_2d_q12_4(int32_t x, int32_t y,
                            uint8_t min_shift, uint8_t max_shift,
                            uint8_t ridged_min_shift,
                            uint8_t amp_min_shift, int16_t base_amp,
@@ -660,21 +660,21 @@ chaff_fbm_rotated_2d_q12_4(int16_t x, int16_t y,
                            int32_t cos_q15, int32_t sin_q15)
 {
 	if (min_shift > max_shift) return 0;
-	int16_t cur_x = x;
-	int16_t cur_y = y;
+	int32_t cur_x = x;
+	int32_t cur_y = y;
 	int32_t acc_q12_4 = 0;
 
 	for (int8_t s = (int8_t)max_shift; s >= (int8_t)min_shift; s--) {
 		int16_t amp = chaff_octave_amplitude_ex((uint8_t)s, amp_min_shift, base_amp);
 		uint32_t oct_seed = seed ^ (uint32_t)((uint8_t)s * 0x85EBCA77u + seed_salt);
-		int16_t p[2] = { cur_y, cur_x };
+		int16_t p[2] = { (int16_t)cur_y, (int16_t)cur_x };
 		uint32_t raw = noise_wpoint_n(p, (uint8_t)s, 8, oct_seed, 2, NOISE_FADE5);
 		int32_t val = (int32_t)(raw >> 16) - 128;
 		if ((uint8_t)s >= ridged_min_shift) {
 			val = 64 - abs(val);
 		}
 		acc_q12_4 += (int32_t)((((int64_t)val * amp) << 4) / 128);
-		chaff_rot2d_q15(&cur_x, &cur_y, cos_q15, sin_q15);
+		chaff_rot2d_i32_q15(&cur_x, &cur_y, cos_q15, sin_q15);
 	}
 	return acc_q12_4;
 }
