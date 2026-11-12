@@ -498,7 +498,7 @@ int main(void)
 		chaff_fill(&field, 0, 1, org, st, n, NULL, 4, CHAFF_MODE_SET);
 
 		/* chaff_fill with invalid dimension */
-		chaff_field_t bad_dim = { 1, 4 /* >3 */, 0, 1, &lay };
+		chaff_field_t bad_dim = { 1, 5 /* >4 */, 0, 1, &lay };
 		chaff_fill(&bad_dim, 0, 1, org, st, n, dummy, 4, CHAFF_MODE_SET);
 
 		/* chaff_fill_lod with NULL */
@@ -512,16 +512,210 @@ int main(void)
 		chaff_sample_3d_t s3_null = chaff_sample_grad_3d(NULL, 0, 0, 0);
 		assert(s3_null.val == 0 && s3_null.grad_x == 0 && s3_null.grad_y == 0 && s3_null.grad_z == 0);
 
+		/* chaff_sample_grad_4d with NULL */
+		chaff_sample_4d_t s4_null = chaff_sample_grad_4d(NULL, 0, 0, 0, 0);
+		assert(s4_null.val == 0 && s4_null.grad_x == 0 && s4_null.grad_y == 0 &&
+		       s4_null.grad_z == 0 && s4_null.grad_w == 0);
+
 		/* chaff_fill_slice_3d with NULL / 0 width */
 		chaff_fill_slice_3d(NULL, 0, 0, 0, 16, 16, dummy, NULL, NULL);
 		chaff_fill_slice_3d(&field, 0, 0, 0, 0, 16, dummy, NULL, NULL);
 		chaff_fill_slice_3d(&field, 0, 0, 0, 16, 0, dummy, NULL, NULL);
+
+		/* chaff_fill_slice_4d with NULL / 0 width / dim < 4 */
+		chaff_fill_slice_4d(NULL, 0, 0, 0, 0, 16, 16, dummy, NULL, NULL, NULL, NULL);
+		chaff_fill_slice_4d(&field, 0, 0, 0, 0, 0, 16, dummy, NULL, NULL, NULL, NULL);
+		chaff_fill_slice_4d(&field, 0, 0, 0, 0, 16, 0, dummy, NULL, NULL, NULL, NULL);
+		chaff_fill_slice_4d(&field, 0, 0, 0, 0, 16, 16, dummy, NULL, NULL, NULL, NULL);
 
 		/* chaff_sample_rugged_2d with NULL */
 		chaff_sample_2d_t s_rug = chaff_sample_rugged_2d(NULL, 0, 0);
 		assert(s_rug.elevation == 0 && s_rug.grad_x == 0 && s_rug.grad_y == 0);
 
 		printf("PASS: defensive NULL-safety and invalid parameter guards verified across all entry points\n");
+	}
+
+	/* 14. 4D Analytical Gradients (chaff_sample_grad_4d) & Finite-Difference Parity */
+	{
+		static const chaff_layer_t lay4d_smooth = {
+			.shift = 5, .vshift = 8, .amp = 120, .seed_mode = CHAFF_SEED_SHARED, .contrast = 256
+		};
+		static const chaff_field_t field4d_smooth = {
+			.seed = 0x4D4D1234u, .dim = 4, .flags = CHAFF_FLAG_FADE, .nlayers = 1, .layers = &lay4d_smooth
+		};
+
+		int non_zero_val = 0, non_zero_gx = 0, non_zero_gy = 0, non_zero_gz = 0, non_zero_gw = 0;
+		for (int16_t w = 3; w <= 27; w += 8) {
+			for (int16_t z = 5; z <= 29; z += 8) {
+				for (int16_t y = -20; y <= 20; y += 10) {
+					for (int16_t x = -20; x <= 20; x += 10) {
+						chaff_sample_4d_t s0 = chaff_sample_grad_4d(&field4d_smooth, x, y, z, w);
+						chaff_sample_4d_t sx_p = chaff_sample_grad_4d(&field4d_smooth, (int16_t)(x + 1), y, z, w);
+						chaff_sample_4d_t sx_m = chaff_sample_grad_4d(&field4d_smooth, (int16_t)(x - 1), y, z, w);
+						chaff_sample_4d_t sy_p = chaff_sample_grad_4d(&field4d_smooth, x, (int16_t)(y + 1), z, w);
+						chaff_sample_4d_t sy_m = chaff_sample_grad_4d(&field4d_smooth, x, (int16_t)(y - 1), z, w);
+						chaff_sample_4d_t sz_p = chaff_sample_grad_4d(&field4d_smooth, x, y, (int16_t)(z + 1), w);
+						chaff_sample_4d_t sz_m = chaff_sample_grad_4d(&field4d_smooth, x, y, (int16_t)(z - 1), w);
+						chaff_sample_4d_t sw_p = chaff_sample_grad_4d(&field4d_smooth, x, y, z, (int16_t)(w + 1));
+						chaff_sample_4d_t sw_m = chaff_sample_grad_4d(&field4d_smooth, x, y, z, (int16_t)(w - 1));
+
+						int32_t fd_x = (sx_p.val - sx_m.val) / 2;
+						int32_t fd_y = (sy_p.val - sy_m.val) / 2;
+						int32_t fd_z = (sz_p.val - sz_m.val) / 2;
+						int32_t fd_w = (sw_p.val - sw_m.val) / 2;
+
+						assert(abs((int32_t)s0.grad_x - fd_x) <= 4);
+						assert(abs((int32_t)s0.grad_y - fd_y) <= 4);
+						assert(abs((int32_t)s0.grad_z - fd_z) <= 4);
+						assert(abs((int32_t)s0.grad_w - fd_w) <= 4);
+
+						if (s0.val != 0) non_zero_val++;
+						if (s0.grad_x != 0) non_zero_gx++;
+						if (s0.grad_y != 0) non_zero_gy++;
+						if (s0.grad_z != 0) non_zero_gz++;
+						if (s0.grad_w != 0) non_zero_gw++;
+					}
+				}
+			}
+		}
+		assert(non_zero_val > 100);
+		assert(non_zero_gx > 50 && non_zero_gy > 50 && non_zero_gz > 50 && non_zero_gw > 50);
+		printf("PASS: chaff_sample_grad_4d analytical derivatives match 4D central finite differences\n");
+	}
+
+	/* 15. chaff_fill_slice_4d Bit-Exact Parity with chaff_sample_grad_4d & Wrap Boundaries */
+	{
+		static const chaff_layer_t layers4d[] = {
+			{ .shift = 6, .vshift = 8, .amp =   0, .seed_mode = CHAFF_SEED_SHARED,    .contrast = 256 },
+			{ .shift = 4, .vshift = 8, .amp = 100, .seed_mode = CHAFF_SEED_PER_LAYER, .contrast = 512 },
+			{ .shift = 3, .vshift = 8, .amp =  60, .seed_mode = CHAFF_SEED_SHARED | CHAFF_LAYER_RIDGED, .contrast = 192 }
+		};
+		static const chaff_field_t field4d = {
+			.seed = 0xCAFE4D00u, .dim = 4, .flags = CHAFF_FLAG_FADE, .nlayers = 3, .layers = layers4d
+		};
+
+		uint16_t width = 40, height = 36;
+		int16_t z_val = -19, w_val = 43;
+		int16_t ox = -22, oy = 11;
+
+		int32_t slice_val[40 * 36], slice_val_only[40 * 36];
+		int16_t slice_gx[40 * 36], slice_gy[40 * 36], slice_gz[40 * 36], slice_gw[40 * 36];
+
+		chaff_fill_slice_4d(&field4d, z_val, w_val, ox, oy, width, height,
+		                    slice_val, slice_gx, slice_gy, slice_gz, slice_gw);
+		chaff_fill_slice_4d(&field4d, z_val, w_val, ox, oy, width, height,
+		                    slice_val_only, NULL, NULL, NULL, NULL);
+
+		for (uint16_t r = 0; r < height; r++) {
+			for (uint16_t c = 0; c < width; c++) {
+				int16_t px = (int16_t)(ox + c);
+				int16_t py = (int16_t)(oy + r);
+				chaff_sample_4d_t pt = chaff_sample_grad_4d(&field4d, px, py, z_val, w_val);
+				size_t idx = (size_t)r * width + c;
+				assert(slice_val[idx] == pt.val);
+				assert(slice_val_only[idx] == pt.val);
+				assert(slice_gx[idx] == pt.grad_x);
+				assert(slice_gy[idx] == pt.grad_y);
+				assert(slice_gz[idx] == pt.grad_z);
+				assert(slice_gw[idx] == pt.grad_w);
+			}
+		}
+
+		/* Verify int16_t modular wrap boundary (32767 -> -32768) along Z and W */
+		int16_t z_wrap = 32767, w_wrap = 32767;
+		int32_t wrap_val[16 * 16];
+		int16_t wrap_gx[16 * 16], wrap_gy[16 * 16], wrap_gz[16 * 16], wrap_gw[16 * 16];
+		chaff_fill_slice_4d(&field4d, z_wrap, w_wrap, -8, -8, 16, 16,
+		                    wrap_val, wrap_gx, wrap_gy, wrap_gz, wrap_gw);
+		for (int r = 0; r < 16; r++) {
+			for (int c = 0; c < 16; c++) {
+				int16_t px = (int16_t)(-8 + c);
+				int16_t py = (int16_t)(-8 + r);
+				chaff_sample_4d_t pt = chaff_sample_grad_4d(&field4d, px, py, z_wrap, w_wrap);
+				size_t idx = (size_t)r * 16 + c;
+				assert(wrap_val[idx] == pt.val);
+				assert(wrap_gx[idx] == pt.grad_x);
+				assert(wrap_gy[idx] == pt.grad_y);
+				assert(wrap_gz[idx] == pt.grad_z);
+				assert(wrap_gw[idx] == pt.grad_w);
+			}
+		}
+		printf("PASS: chaff_fill_slice_4d bit-exact parity with chaff_sample_grad_4d across multi-cell & int16_t wrap boundaries\n");
+	}
+
+	/* 16. 4D chaff_fill, chaff_fill_lod, chaff_sample_4d, and GLSL 4D Reference Parity */
+	{
+		static const chaff_layer_t lay4 = {
+			.shift = 4, .vshift = 8, .amp = 90, .seed_mode = CHAFF_SEED_SHARED, .contrast = 256
+		};
+		static const chaff_field_t field4 = {
+			.seed = 0x13572468u, .dim = 4, .flags = CHAFF_FLAG_FADE, .nlayers = 1, .layers = &lay4
+		};
+		chaff_coord_t org4[4] = { { 2, 0 }, { -4, 0 }, { 8, 0 }, { -12, 0 } };
+		int32_t step4[4] = { 65536, 65536, 65536, 65536 };
+		uint16_t n4[4] = { 2, 3, 4, 4 };
+		int32_t out4[2 * 3 * 4 * 4], ref4[2 * 3 * 4 * 4];
+		chaff_fill_lod(&field4, 0, org4, step4, n4, out4, 4, CHAFF_MODE_SET);
+		chaff_fill(&field4, 0, 1, org4, step4, n4, ref4, 4, CHAFF_MODE_SET);
+
+		int non_zero4 = 0;
+		for (int i = 0; i < 2 * 3 * 4 * 4; i++) {
+			assert(out4[i] == ref4[i]);
+			if (out4[i] != 0) non_zero4++;
+		}
+		assert(non_zero4 > 70);
+
+		int32_t out4_add[2 * 3 * 4 * 4];
+		memcpy(out4_add, out4, sizeof(out4));
+		chaff_fill_lod(&field4, 0, org4, step4, n4, out4_add, 4, CHAFF_MODE_ADD);
+		for (int i = 0; i < 2 * 3 * 4 * 4; i++) {
+			assert(out4_add[i] == out4[i] * 2);
+		}
+
+		/* Test noise_sample_4d / chaff_sample_4d and 4D scanline */
+		static const noise_octave_t octs4[] = {
+			{ .shift = 4, .amp = 90, .skew_x = 3, .skew_y = -5, .contrast = 256 }
+		};
+		noise_cascade_t cfg4 = { .seed = 0x2468ACE0u, .count = 1, .octaves = octs4 };
+		noise_scanline_t scan4;
+		chaff_scanline_init(&scan4, &cfg4, 4);
+		scan4.w = 17;
+		int32_t row4[16];
+		chaff_scanline_eval_row(&scan4, -8, 12, -5, 16, row4);
+		for (int i = 0; i < 16; i++) {
+			int16_t px = (int16_t)(-8 + i);
+			assert(row4[i] == chaff_sample_4d(&cfg4, px, 12, -5, 17));
+		}
+
+		/* Test GLSL 4D hash & analytical gradient parity against CPU noise_r(..., 4) */
+		uint32_t gseed = 0xDEADBEEFu;
+		for (int16_t w = -32; w <= 32; w += 16) {
+			for (int16_t z = -32; z <= 32; z += 16) {
+				for (int16_t y = -32; y <= 32; y += 16) {
+					for (int16_t x = -32; x <= 32; x += 16) {
+						/* In GLSL 4D convention, p = (x, y, z, w) packs v1=(y,x), v2=(z,w),
+						 * matching int16_t va[4] = { y, x, z, w } in little-endian */
+						int16_t va[4] = { y, x, z, w };
+						uint32_t cpu_h = noise_r(va, gseed, 0, 4);
+						uint32_t glsl_h = chaff_glsl_ref_hash4(x, y, z, w, gseed);
+						assert(cpu_h == glsl_h);
+					}
+				}
+			}
+		}
+
+		float eps = 0.01f;
+		chaff_glsl_ref_vec5_t g4 = chaff_glsl_ref_sample_grad_4d(12.3f, -7.4f, 5.6f, 19.2f, 4, gseed);
+		float v4_center = chaff_glsl_ref_sample_4d(12.3f, -7.4f, 5.6f, 19.2f, 4, gseed);
+		assert(fabsf(g4.val - v4_center) < 1e-6f);
+		float fd_gx = (chaff_glsl_ref_sample_4d(12.3f + eps, -7.4f, 5.6f, 19.2f, 4, gseed) -
+		               chaff_glsl_ref_sample_4d(12.3f - eps, -7.4f, 5.6f, 19.2f, 4, gseed)) / (2.0f * eps);
+		float fd_gw = (chaff_glsl_ref_sample_4d(12.3f, -7.4f, 5.6f, 19.2f + eps, 4, gseed) -
+		               chaff_glsl_ref_sample_4d(12.3f, -7.4f, 5.6f, 19.2f - eps, 4, gseed)) / (2.0f * eps);
+		assert(fabsf(g4.grad_x - fd_gx) < 1e-3f);
+		assert(fabsf(g4.grad_w - fd_gw) < 1e-3f);
+
+		printf("PASS: 4D chaff_fill_lod, chaff_sample_4d, and GLSL 4D hash/gradient reference parity verified\n");
 	}
 
 	printf("=== ALL CANONICAL LIBCHAFF TESTS PASSED ===\n");

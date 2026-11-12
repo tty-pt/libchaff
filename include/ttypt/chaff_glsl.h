@@ -48,6 +48,21 @@
 	"    h *= 0x85EBCA77u;\n" \
 	"    h ^= h >> 16u;\n" \
 	"    return h;\n" \
+	"}\n" \
+	"uint chaff_hash4(ivec4 p, uint seed) {\n" \
+	"    uint v1 = (uint(p.y) & 0xFFFFu) | ((uint(p.x) & 0xFFFFu) << 16u);\n" \
+	"    uint v2 = (uint(p.z) & 0xFFFFu) | ((uint(p.w) & 0xFFFFu) << 16u);\n" \
+	"    uint h = seed + 0x165667B1u + 8u;\n" \
+	"    h += v1 * 0xC2B2AE3Du;\n" \
+	"    h = chaff_rotl32(h, 17) * 0x27D4EB2Fu;\n" \
+	"    h += v2 * 0xC2B2AE3Du;\n" \
+	"    h = chaff_rotl32(h, 17) * 0x27D4EB2Fu;\n" \
+	"    h ^= h >> 15u;\n" \
+	"    h *= 0x85EBCA77u;\n" \
+	"    h ^= h >> 13u;\n" \
+	"    h *= 0xC2B2AE3Du;\n" \
+	"    h ^= h >> 16u;\n" \
+	"    return h;\n" \
 	"}\n"
 
 /* Continuous cubic Hermite interpolation matching noise_wcorners and noise_wstep.
@@ -151,6 +166,74 @@
 	"    float dN_dz = b1 - b0;\n" \
 	"    vec3 grad = (vec3(dN_dx, dN_dy, dN_dz) * du) / (255.0 * cell_size);\n" \
 	"    return vec4(val, grad.x, grad.y, grad.z);\n" \
+	"}\n" \
+	"float chaff_sample_4d(vec4 pos, uint shift, uint seed) {\n" \
+	"    float cell_size = float(1u << shift);\n" \
+	"    vec4 p = pos / cell_size;\n" \
+	"    ivec4 i0 = ivec4(floor(p));\n" \
+	"    vec4 f = fract(p);\n" \
+	"    vec4 u = f * f * (3.0 - 2.0 * f);\n" \
+	"    int step_px = int(1u << shift);\n" \
+	"    ivec4 cell = i0 * step_px;\n" \
+	"    float d[8];\n" \
+	"    for (int i = 0; i < 8; i++) {\n" \
+	"        int ox = (i & 1) != 0 ? step_px : 0;\n" \
+	"        int oy = (i & 2) != 0 ? step_px : 0;\n" \
+	"        int oz = (i & 4) != 0 ? step_px : 0;\n" \
+	"        float v0 = float(chaff_hash4(cell + ivec4(ox, oy, oz, 0), seed) >> 24u);\n" \
+	"        float v1 = float(chaff_hash4(cell + ivec4(ox, oy, oz, step_px), seed) >> 24u);\n" \
+	"        d[i] = mix(v0, v1, u.w);\n" \
+	"    }\n" \
+	"    float c0 = mix(d[0], d[4], u.z);\n" \
+	"    float c1 = mix(d[1], d[5], u.z);\n" \
+	"    float c2 = mix(d[2], d[6], u.z);\n" \
+	"    float c3 = mix(d[3], d[7], u.z);\n" \
+	"    float b0 = mix(c0, c2, u.y);\n" \
+	"    float b1 = mix(c1, c3, u.y);\n" \
+	"    return mix(b0, b1, u.x) / 255.0;\n" \
+	"}\n" \
+	"vec4 chaff_sample_grad_4d(vec4 pos, uint shift, uint seed, out float out_grad_w) {\n" \
+	"    float cell_size = float(1u << shift);\n" \
+	"    vec4 p = pos / cell_size;\n" \
+	"    ivec4 i0 = ivec4(floor(p));\n" \
+	"    vec4 f = fract(p);\n" \
+	"    vec4 u = f * f * (3.0 - 2.0 * f);\n" \
+	"    vec4 du = 6.0 * f * (1.0 - f);\n" \
+	"    int step_px = int(1u << shift);\n" \
+	"    ivec4 cell = i0 * step_px;\n" \
+	"    float d[8];\n" \
+	"    float dw_c[8];\n" \
+	"    for (int i = 0; i < 8; i++) {\n" \
+	"        int ox = (i & 1) != 0 ? step_px : 0;\n" \
+	"        int oy = (i & 2) != 0 ? step_px : 0;\n" \
+	"        int oz = (i & 4) != 0 ? step_px : 0;\n" \
+	"        float v0 = float(chaff_hash4(cell + ivec4(ox, oy, oz, 0), seed) >> 24u);\n" \
+	"        float v1 = float(chaff_hash4(cell + ivec4(ox, oy, oz, step_px), seed) >> 24u);\n" \
+	"        dw_c[i] = v1 - v0;\n" \
+	"        d[i] = mix(v0, v1, u.w);\n" \
+	"    }\n" \
+	"    float c0 = mix(d[0], d[4], u.z);\n" \
+	"    float c1 = mix(d[1], d[5], u.z);\n" \
+	"    float c2 = mix(d[2], d[6], u.z);\n" \
+	"    float c3 = mix(d[3], d[7], u.z);\n" \
+	"    float b0 = mix(c0, c2, u.y);\n" \
+	"    float b1 = mix(c1, c3, u.y);\n" \
+	"    float val = mix(b0, b1, u.x) / 255.0;\n" \
+	"    float dN_dx = b1 - b0;\n" \
+	"    float dN_dy = mix(c2 - c0, c3 - c1, u.x);\n" \
+	"    float dz0 = mix(d[4] - d[0], d[6] - d[2], u.y);\n" \
+	"    float dz1 = mix(d[5] - d[1], d[7] - d[3], u.y);\n" \
+	"    float dN_dz = mix(dz0, dz1, u.x);\n" \
+	"    float dw0 = mix(dw_c[0], dw_c[4], u.z);\n" \
+	"    float dw1 = mix(dw_c[1], dw_c[5], u.z);\n" \
+	"    float dw2 = mix(dw_c[2], dw_c[6], u.z);\n" \
+	"    float dw3 = mix(dw_c[3], dw_c[7], u.z);\n" \
+	"    float dw_y0 = mix(dw0, dw2, u.y);\n" \
+	"    float dw_y1 = mix(dw1, dw3, u.y);\n" \
+	"    float dN_dw = mix(dw_y0, dw_y1, u.x);\n" \
+	"    float scale = 1.0 / (255.0 * cell_size);\n" \
+	"    out_grad_w = (dN_dw * du.w) * scale;\n" \
+	"    return vec4(val, (dN_dx * du.x) * scale, (dN_dy * du.y) * scale, (dN_dz * du.z) * scale);\n" \
 	"}\n"
 
 #define CHAFF_GLSL_EVAL_MULTI_FN \
@@ -394,6 +477,147 @@ static inline chaff_glsl_ref_vec4_t chaff_glsl_ref_sample_grad_3d(float wx, floa
 	out.grad_x = (dN_dx * du_x) / (255.0f * cell_size);
 	out.grad_y = (dN_dy * du_y) / (255.0f * cell_size);
 	out.grad_z = (dN_dz * du_z) / (255.0f * cell_size);
+	return out;
+}
+
+static inline uint32_t chaff_glsl_ref_hash4(int16_t x, int16_t y, int16_t z, int16_t w, uint32_t seed) {
+	uint32_t v1 = (uint32_t)(uint16_t)y | ((uint32_t)(uint16_t)x << 16);
+	uint32_t v2 = (uint32_t)(uint16_t)z | ((uint32_t)(uint16_t)w << 16);
+	uint32_t h = seed + 0x165667B1u + 8u;
+	h += v1 * 0xC2B2AE3Du;
+	h = chaff_glsl_ref_rotl32(h, 17) * 0x27D4EB2Fu;
+	h += v2 * 0xC2B2AE3Du;
+	h = chaff_glsl_ref_rotl32(h, 17) * 0x27D4EB2Fu;
+	h ^= h >> 15;
+	h *= 0x85EBCA77u;
+	h ^= h >> 13;
+	h *= 0xC2B2AE3Du;
+	h ^= h >> 16;
+	return h;
+}
+
+static inline float chaff_glsl_ref_sample_4d(float wx, float wy, float wz, float ww, unsigned shift, uint32_t seed) {
+	float cell_size = (float)(1u << shift);
+	float px = wx / cell_size;
+	float py = wy / cell_size;
+	float pz = wz / cell_size;
+	float pw = ww / cell_size;
+	int ix = (int)px - (px < 0 && px != (int)px ? 1 : 0);
+	int iy = (int)py - (py < 0 && py != (int)py ? 1 : 0);
+	int iz = (int)pz - (pz < 0 && pz != (int)pz ? 1 : 0);
+	int iw = (int)pw - (pw < 0 && pw != (int)pw ? 1 : 0);
+	float fx = px - (float)ix;
+	float fy = py - (float)iy;
+	float fz = pz - (float)iz;
+	float fw = pw - (float)iw;
+	float ux = fx * fx * (3.0f - 2.0f * fx);
+	float uy = fy * fy * (3.0f - 2.0f * fy);
+	float uz = fz * fz * (3.0f - 2.0f * fz);
+	float uw = fw * fw * (3.0f - 2.0f * fw);
+	int step_px = 1 << shift;
+	int cx = ix * step_px;
+	int cy = iy * step_px;
+	int cz = iz * step_px;
+	int cw = iw * step_px;
+
+	float d[8];
+	for (int i = 0; i < 8; i++) {
+		int ox = (i & 1) ? step_px : 0;
+		int oy = (i & 2) ? step_px : 0;
+		int oz = (i & 4) ? step_px : 0;
+		float v0 = (float)(chaff_glsl_ref_hash4((int16_t)(cx + ox), (int16_t)(cy + oy), (int16_t)(cz + oz), (int16_t)cw, seed) >> 24u);
+		float v1 = (float)(chaff_glsl_ref_hash4((int16_t)(cx + ox), (int16_t)(cy + oy), (int16_t)(cz + oz), (int16_t)(cw + step_px), seed) >> 24u);
+		d[i] = v0 + (v1 - v0) * uw;
+	}
+
+	float c0 = d[0] + (d[4] - d[0]) * uz;
+	float c1 = d[1] + (d[5] - d[1]) * uz;
+	float c2 = d[2] + (d[6] - d[2]) * uz;
+	float c3 = d[3] + (d[7] - d[3]) * uz;
+
+	float b0 = c0 + (c2 - c0) * uy;
+	float b1 = c1 + (c3 - c1) * uy;
+
+	return (b0 + (b1 - b0) * ux) / 255.0f;
+}
+
+typedef struct {
+	float val;
+	float grad_x;
+	float grad_y;
+	float grad_z;
+	float grad_w;
+} chaff_glsl_ref_vec5_t;
+
+static inline chaff_glsl_ref_vec5_t chaff_glsl_ref_sample_grad_4d(float wx, float wy, float wz, float ww, unsigned shift, uint32_t seed) {
+	float cell_size = (float)(1u << shift);
+	float px = wx / cell_size;
+	float py = wy / cell_size;
+	float pz = wz / cell_size;
+	float pw = ww / cell_size;
+	int ix = (int)px - (px < 0 && px != (int)px ? 1 : 0);
+	int iy = (int)py - (py < 0 && py != (int)py ? 1 : 0);
+	int iz = (int)pz - (pz < 0 && pz != (int)pz ? 1 : 0);
+	int iw = (int)pw - (pw < 0 && pw != (int)pw ? 1 : 0);
+	float fx = px - (float)ix;
+	float fy = py - (float)iy;
+	float fz = pz - (float)iz;
+	float fw = pw - (float)iw;
+	float ux = fx * fx * (3.0f - 2.0f * fx);
+	float uy = fy * fy * (3.0f - 2.0f * fy);
+	float uz = fz * fz * (3.0f - 2.0f * fz);
+	float uw = fw * fw * (3.0f - 2.0f * fw);
+	float du_x = 6.0f * fx * (1.0f - fx);
+	float du_y = 6.0f * fy * (1.0f - fy);
+	float du_z = 6.0f * fz * (1.0f - fz);
+	float du_w = 6.0f * fw * (1.0f - fw);
+	int step_px = 1 << shift;
+	int cx = ix * step_px;
+	int cy = iy * step_px;
+	int cz = iz * step_px;
+	int cw = iw * step_px;
+
+	float d[8], dw_c[8];
+	for (int i = 0; i < 8; i++) {
+		int ox = (i & 1) ? step_px : 0;
+		int oy = (i & 2) ? step_px : 0;
+		int oz = (i & 4) ? step_px : 0;
+		float v0 = (float)(chaff_glsl_ref_hash4((int16_t)(cx + ox), (int16_t)(cy + oy), (int16_t)(cz + oz), (int16_t)cw, seed) >> 24u);
+		float v1 = (float)(chaff_glsl_ref_hash4((int16_t)(cx + ox), (int16_t)(cy + oy), (int16_t)(cz + oz), (int16_t)(cw + step_px), seed) >> 24u);
+		dw_c[i] = v1 - v0;
+		d[i] = v0 + (v1 - v0) * uw;
+	}
+
+	float c0 = d[0] + (d[4] - d[0]) * uz;
+	float c1 = d[1] + (d[5] - d[1]) * uz;
+	float c2 = d[2] + (d[6] - d[2]) * uz;
+	float c3 = d[3] + (d[7] - d[3]) * uz;
+
+	float b0 = c0 + (c2 - c0) * uy;
+	float b1 = c1 + (c3 - c1) * uy;
+	float val = (b0 + (b1 - b0) * ux) / 255.0f;
+
+	float dN_dx = b1 - b0;
+	float dN_dy = (c2 - c0) + ((c3 - c1) - (c2 - c0)) * ux;
+	float dz0 = (d[4] - d[0]) + ((d[6] - d[2]) - (d[4] - d[0])) * uy;
+	float dz1 = (d[5] - d[1]) + ((d[7] - d[3]) - (d[5] - d[1])) * uy;
+	float dN_dz = dz0 + (dz1 - dz0) * ux;
+
+	float dw0 = dw_c[0] + (dw_c[4] - dw_c[0]) * uz;
+	float dw1 = dw_c[1] + (dw_c[5] - dw_c[1]) * uz;
+	float dw2 = dw_c[2] + (dw_c[6] - dw_c[2]) * uz;
+	float dw3 = dw_c[3] + (dw_c[7] - dw_c[3]) * uz;
+	float dw_y0 = dw0 + (dw2 - dw0) * uy;
+	float dw_y1 = dw1 + (dw3 - dw1) * uy;
+	float dN_dw = dw_y0 + (dw_y1 - dw_y0) * ux;
+
+	float scale = 1.0f / (255.0f * cell_size);
+	chaff_glsl_ref_vec5_t out;
+	out.val = val;
+	out.grad_x = (dN_dx * du_x) * scale;
+	out.grad_y = (dN_dy * du_y) * scale;
+	out.grad_z = (dN_dz * du_z) * scale;
+	out.grad_w = (dN_dw * du_w) * scale;
 	return out;
 }
 
