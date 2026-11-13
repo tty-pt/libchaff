@@ -19,10 +19,10 @@
     "test": "node --test tests/chaff.test.mjs"
   },
   "peerDependencies": {
-    "@tty-pt/stele": ">=1.6.0"
+    "@tty-pt/stele": ">=1.6.1"
   },
   "devDependencies": {
-    "@tty-pt/stele": "^1.6.0"
+    "@tty-pt/stele": "^1.6.1"
   },
   "keywords": [
     "chaff",
