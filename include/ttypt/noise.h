@@ -733,19 +733,23 @@ chaff_fill(const chaff_field_t *field,
            const uint16_t n[],
            int32_t *out, size_t stride, unsigned mode)
 {
-	if (!field || !out || field->dim == 0 || field->dim > 3) return;
+	if (!field || !out || field->dim == 0 || field->dim > 4) return;
 	if (layer_hi > field->nlayers) layer_hi = field->nlayers;
 
-	size_t slices = (field->dim == 3) ? n[0] : 1;
+	size_t hypers = (field->dim == 4) ? n[0] : 1;
+	size_t slices = (field->dim >= 3) ? n[field->dim - 3] : 1;
 	size_t rows   = (field->dim >= 2) ? n[field->dim - 2] : 1;
 	size_t cols   = n[field->dim - 1];
 	if (stride < cols) stride = cols;
 	size_t slice_stride = rows * stride;
+	size_t hyper_stride = slices * slice_stride;
 
 	if (mode == CHAFF_MODE_SET) {
-		for (size_t s = 0; s < slices; s++) {
-			for (size_t r = 0; r < rows; r++) {
-				memset(out + s * slice_stride + r * stride, 0, cols * sizeof(int32_t));
+		for (size_t h = 0; h < hypers; h++) {
+			for (size_t s = 0; s < slices; s++) {
+				for (size_t r = 0; r < rows; r++) {
+					memset(out + h * hyper_stride + s * slice_stride + r * stride, 0, cols * sizeof(int32_t));
+				}
 			}
 		}
 	}
@@ -763,9 +767,13 @@ chaff_fill(const chaff_field_t *field,
 		uint16_t mask = COORDMASK_LSHIFT(x);
 		noise_wcache_init(&cache);
 
-		int32_t base_z_q16 = (field->dim == 3) ?
+		int32_t base_w_q16 = (field->dim == 4) ?
 		                     (((int32_t)origin[0].cell << 16) | (uint32_t)origin[0].frac) : 0;
-		int32_t dz_q16     = (field->dim == 3) ? step_q16[0] : 0;
+		int32_t dw_q16     = (field->dim == 4) ? step_q16[0] : 0;
+
+		int32_t base_z_q16 = (field->dim >= 3) ?
+		                     (((int32_t)origin[field->dim - 3].cell << 16) | (uint32_t)origin[field->dim - 3].frac) : 0;
+		int32_t dz_q16     = (field->dim >= 3) ? step_q16[field->dim - 3] : 0;
 
 		int32_t base_y_q16 = (field->dim >= 2) ?
 		                     (((int32_t)origin[field->dim - 2].cell << 16) | (uint32_t)origin[field->dim - 2].frac) : 0;
@@ -774,104 +782,153 @@ chaff_fill(const chaff_field_t *field,
 		int32_t base_x_q16 = (((int32_t)origin[field->dim - 1].cell << 16) | (uint32_t)origin[field->dim - 1].frac);
 		int32_t dx_q16     = step_q16[field->dim - 1];
 
-		for (size_t s = 0; s < slices; s++) {
-			int32_t raw_z_q16 = base_z_q16 + (int32_t)s * dz_q16;
-			int32_t *slice_out = out + s * slice_stride;
+		for (size_t h = 0; h < hypers; h++) {
+			int32_t raw_w_q16 = base_w_q16 + (int32_t)h * dw_q16;
+			int32_t *hyper_out = out + h * hyper_stride;
 
-			for (size_t r = 0; r < rows; r++) {
-				int32_t raw_y_q16 = base_y_q16 + (int32_t)r * dy_q16;
-				int32_t *row_out = slice_out + r * stride;
+			for (size_t s = 0; s < slices; s++) {
+				int32_t raw_z_q16 = base_z_q16 + (int32_t)s * dz_q16;
+				int32_t *slice_out = hyper_out + s * slice_stride;
 
-				for (size_t c = 0; c < cols; c++) {
-					int32_t raw_x_q16 = base_x_q16 + (int32_t)c * dx_q16;
-					int16_t cell_x, cell_y, cell_z = 0;
-					uint16_t frac_x = 0, frac_y = 0, frac_z = 0;
+				for (size_t r = 0; r < rows; r++) {
+					int32_t raw_y_q16 = base_y_q16 + (int32_t)r * dy_q16;
+					int32_t *row_out = slice_out + r * stride;
 
-					if ((raw_x_q16 & 0xffff) == 0 && (raw_y_q16 & 0xffff) == 0 && (raw_z_q16 & 0xffff) == 0) {
-						cell_x = (int16_t)(raw_x_q16 >> 16);
-						cell_y = (int16_t)(raw_y_q16 >> 16);
-						cell_z = (int16_t)(raw_z_q16 >> 16);
-						if (lay->skew[0]) cell_x = (int16_t)(cell_x + cell_y / lay->skew[0]);
-						if (lay->skew[1]) cell_y = (int16_t)(cell_y - cell_x / lay->skew[1]);
-					} else {
-						int32_t qx = raw_x_q16, qy = raw_y_q16;
-						if (lay->skew[0]) qx += qy / lay->skew[0];
-						if (lay->skew[1]) qy -= qx / lay->skew[1];
-						cell_x = (int16_t)(qx >> 16);
-						frac_x = (uint16_t)(qx & 0xffff);
-						cell_y = (int16_t)(qy >> 16);
-						frac_y = (uint16_t)(qy & 0xffff);
-						cell_z = (int16_t)(raw_z_q16 >> 16);
-						frac_z = (uint16_t)(raw_z_q16 & 0xffff);
-					}
+					for (size_t c = 0; c < cols; c++) {
+						int32_t raw_x_q16 = base_x_q16 + (int32_t)c * dx_q16;
+						int16_t cell_x, cell_y, cell_z = 0, cell_w = 0;
+						uint16_t frac_x = 0, frac_y = 0, frac_z = 0, frac_w = 0;
 
-					uint32_t raw = 0;
-					if (field->dim == 1) {
-						int16_t pt_s[1] = { (int16_t)(cell_x & mask) };
-						uint32_t fix = (uint16_t)cell_x & (uint16_t)~mask;
-						uint32_t ux = (field->flags & CHAFF_FLAG_FADE) ?
-						              chaff_fade_frac(fix, frac_x, x) :
-						              (((uint32_t)fix << 16) | frac_x);
-						const uint32_t *v = noise_wcorners(&cache, pt_s, x, vshift, seed, 1);
-						int32_t st = noise_wstep_slope(v[0], v[1], x);
-						raw = v[0] + (uint32_t)(((int64_t)st * ux) >> 16);
-					} else if (field->dim == 2) {
-						int16_t pt_s[2] = { (int16_t)(cell_y & mask), (int16_t)(cell_x & mask) };
-						uint32_t fiy = (uint16_t)cell_y & (uint16_t)~mask;
-						uint32_t fix = (uint16_t)cell_x & (uint16_t)~mask;
-						uint32_t uy = (field->flags & CHAFF_FLAG_FADE) ?
-						              chaff_fade_frac(fiy, frac_y, x) :
-						              (((uint32_t)fiy << 16) | frac_y);
-						uint32_t ux = (field->flags & CHAFF_FLAG_FADE) ?
-						              chaff_fade_frac(fix, frac_x, x) :
-						              (((uint32_t)fix << 16) | frac_x);
-						const uint32_t *v = noise_wcorners(&cache, pt_s, x, vshift, seed, 2);
-						int32_t s0 = noise_wstep_slope(v[0], v[2], x);
-						int32_t s1 = noise_wstep_slope(v[1], v[3], x);
-						uint32_t b0 = v[0] + (uint32_t)(((int64_t)s0 * uy) >> 16);
-						uint32_t b1 = v[1] + (uint32_t)(((int64_t)s1 * uy) >> 16);
-						int32_t st = noise_wstep_slope(b0, b1, x);
-						raw = b0 + (uint32_t)(((int64_t)st * ux) >> 16);
-					} else if (field->dim == 3) {
-						int16_t pt_s[3] = { (int16_t)(cell_z & mask), (int16_t)(cell_y & mask), (int16_t)(cell_x & mask) };
-						uint32_t fiz = (uint16_t)cell_z & (uint16_t)~mask;
-						uint32_t fiy = (uint16_t)cell_y & (uint16_t)~mask;
-						uint32_t fix = (uint16_t)cell_x & (uint16_t)~mask;
-						uint32_t uz = (field->flags & CHAFF_FLAG_FADE) ?
-						              chaff_fade_frac(fiz, frac_z, x) :
-						              (((uint32_t)fiz << 16) | frac_z);
-						uint32_t uy = (field->flags & CHAFF_FLAG_FADE) ?
-						              chaff_fade_frac(fiy, frac_y, x) :
-						              (((uint32_t)fiy << 16) | frac_y);
-						uint32_t ux = (field->flags & CHAFF_FLAG_FADE) ?
-						              chaff_fade_frac(fix, frac_x, x) :
-						              (((uint32_t)fix << 16) | frac_x);
-						const uint32_t *v = noise_wcorners(&cache, pt_s, x, vshift, seed, 3);
-						uint32_t c_mid[4];
-						for (int i = 0; i < 4; i++) {
-							int32_t st_z = noise_wstep_slope(v[i], v[i + 4], x);
-							c_mid[i] = v[i] + (uint32_t)(((int64_t)st_z * uz) >> 16);
+						if ((raw_x_q16 & 0xffff) == 0 && (raw_y_q16 & 0xffff) == 0 &&
+						    (raw_z_q16 & 0xffff) == 0 && (raw_w_q16 & 0xffff) == 0) {
+							cell_x = (int16_t)(raw_x_q16 >> 16);
+							cell_y = (int16_t)(raw_y_q16 >> 16);
+							cell_z = (int16_t)(raw_z_q16 >> 16);
+							cell_w = (int16_t)(raw_w_q16 >> 16);
+							if (lay->skew[0]) cell_x = (int16_t)(cell_x + cell_y / lay->skew[0]);
+							if (lay->skew[1]) cell_y = (int16_t)(cell_y - cell_x / lay->skew[1]);
+						} else {
+							int32_t qx = raw_x_q16, qy = raw_y_q16;
+							if (lay->skew[0]) qx += qy / lay->skew[0];
+							if (lay->skew[1]) qy -= qx / lay->skew[1];
+							cell_x = (int16_t)(qx >> 16);
+							frac_x = (uint16_t)(qx & 0xffff);
+							cell_y = (int16_t)(qy >> 16);
+							frac_y = (uint16_t)(qy & 0xffff);
+							cell_z = (int16_t)(raw_z_q16 >> 16);
+							frac_z = (uint16_t)(raw_z_q16 & 0xffff);
+							cell_w = (int16_t)(raw_w_q16 >> 16);
+							frac_w = (uint16_t)(raw_w_q16 & 0xffff);
 						}
-						int32_t s0 = noise_wstep_slope(c_mid[0], c_mid[2], x);
-						int32_t s1 = noise_wstep_slope(c_mid[1], c_mid[3], x);
-						uint32_t b0 = c_mid[0] + (uint32_t)(((int64_t)s0 * uy) >> 16);
-						uint32_t b1 = c_mid[1] + (uint32_t)(((int64_t)s1 * uy) >> 16);
-						int32_t st = noise_wstep_slope(b0, b1, x);
-						raw = b0 + (uint32_t)(((int64_t)st * ux) >> 16);
-					}
 
-					int32_t sample;
-					if (lay->amp == 0) {
-						sample = (int32_t)raw;
-					} else {
-						int32_t val = (int32_t)(raw >> 16) - 128;
-						if (lay->seed_mode & CHAFF_LAYER_RIDGED)
-							val = 64 - abs(val);
-						if (lay->contrast != 0 && lay->contrast != 256)
-							val = (val * (int32_t)lay->contrast) >> 8;
-						sample = (val * (int32_t)lay->amp) >> 7;
+						uint32_t raw = 0;
+						if (field->dim == 1) {
+							int16_t pt_s[1] = { (int16_t)(cell_x & mask) };
+							uint32_t fix = (uint16_t)cell_x & (uint16_t)~mask;
+							uint32_t ux = (field->flags & CHAFF_FLAG_FADE) ?
+							              chaff_fade_frac(fix, frac_x, x) :
+							              (((uint32_t)fix << 16) | frac_x);
+							const uint32_t *v = noise_wcorners(&cache, pt_s, x, vshift, seed, 1);
+							int32_t st = noise_wstep_slope(v[0], v[1], x);
+							raw = v[0] + (uint32_t)(((int64_t)st * ux) >> 16);
+						} else if (field->dim == 2) {
+							int16_t pt_s[2] = { (int16_t)(cell_y & mask), (int16_t)(cell_x & mask) };
+							uint32_t fiy = (uint16_t)cell_y & (uint16_t)~mask;
+							uint32_t fix = (uint16_t)cell_x & (uint16_t)~mask;
+							uint32_t uy = (field->flags & CHAFF_FLAG_FADE) ?
+							              chaff_fade_frac(fiy, frac_y, x) :
+							              (((uint32_t)fiy << 16) | frac_y);
+							uint32_t ux = (field->flags & CHAFF_FLAG_FADE) ?
+							              chaff_fade_frac(fix, frac_x, x) :
+							              (((uint32_t)fix << 16) | frac_x);
+							const uint32_t *v = noise_wcorners(&cache, pt_s, x, vshift, seed, 2);
+							int32_t s0 = noise_wstep_slope(v[0], v[2], x);
+							int32_t s1 = noise_wstep_slope(v[1], v[3], x);
+							uint32_t b0 = v[0] + (uint32_t)(((int64_t)s0 * uy) >> 16);
+							uint32_t b1 = v[1] + (uint32_t)(((int64_t)s1 * uy) >> 16);
+							int32_t st = noise_wstep_slope(b0, b1, x);
+							raw = b0 + (uint32_t)(((int64_t)st * ux) >> 16);
+						} else if (field->dim == 3) {
+							int16_t pt_s[3] = { (int16_t)(cell_z & mask), (int16_t)(cell_y & mask), (int16_t)(cell_x & mask) };
+							uint32_t fiz = (uint16_t)cell_z & (uint16_t)~mask;
+							uint32_t fiy = (uint16_t)cell_y & (uint16_t)~mask;
+							uint32_t fix = (uint16_t)cell_x & (uint16_t)~mask;
+							uint32_t uz = (field->flags & CHAFF_FLAG_FADE) ?
+							              chaff_fade_frac(fiz, frac_z, x) :
+							              (((uint32_t)fiz << 16) | frac_z);
+							uint32_t uy = (field->flags & CHAFF_FLAG_FADE) ?
+							              chaff_fade_frac(fiy, frac_y, x) :
+							              (((uint32_t)fiy << 16) | frac_y);
+							uint32_t ux = (field->flags & CHAFF_FLAG_FADE) ?
+							              chaff_fade_frac(fix, frac_x, x) :
+							              (((uint32_t)fix << 16) | frac_x);
+							const uint32_t *v = noise_wcorners(&cache, pt_s, x, vshift, seed, 3);
+							uint32_t c_mid[4];
+							for (int i = 0; i < 4; i++) {
+								int32_t st_z = noise_wstep_slope(v[i], v[i + 4], x);
+								c_mid[i] = v[i] + (uint32_t)(((int64_t)st_z * uz) >> 16);
+							}
+							int32_t s0 = noise_wstep_slope(c_mid[0], c_mid[2], x);
+							int32_t s1 = noise_wstep_slope(c_mid[1], c_mid[3], x);
+							uint32_t b0 = c_mid[0] + (uint32_t)(((int64_t)s0 * uy) >> 16);
+							uint32_t b1 = c_mid[1] + (uint32_t)(((int64_t)s1 * uy) >> 16);
+							int32_t st = noise_wstep_slope(b0, b1, x);
+							raw = b0 + (uint32_t)(((int64_t)st * ux) >> 16);
+						} else if (field->dim == 4) {
+							int16_t pt_s[4] = {
+								(int16_t)(cell_w & mask),
+								(int16_t)(cell_z & mask),
+								(int16_t)(cell_y & mask),
+								(int16_t)(cell_x & mask)
+							};
+							uint32_t fiw = (uint16_t)cell_w & (uint16_t)~mask;
+							uint32_t fiz = (uint16_t)cell_z & (uint16_t)~mask;
+							uint32_t fiy = (uint16_t)cell_y & (uint16_t)~mask;
+							uint32_t fix = (uint16_t)cell_x & (uint16_t)~mask;
+							uint32_t uw = (field->flags & CHAFF_FLAG_FADE) ?
+							              chaff_fade_frac(fiw, frac_w, x) :
+							              (((uint32_t)fiw << 16) | frac_w);
+							uint32_t uz = (field->flags & CHAFF_FLAG_FADE) ?
+							              chaff_fade_frac(fiz, frac_z, x) :
+							              (((uint32_t)fiz << 16) | frac_z);
+							uint32_t uy = (field->flags & CHAFF_FLAG_FADE) ?
+							              chaff_fade_frac(fiy, frac_y, x) :
+							              (((uint32_t)fiy << 16) | frac_y);
+							uint32_t ux = (field->flags & CHAFF_FLAG_FADE) ?
+							              chaff_fade_frac(fix, frac_x, x) :
+							              (((uint32_t)fix << 16) | frac_x);
+							const uint32_t *v = noise_wcorners(&cache, pt_s, x, vshift, seed, 4);
+							uint32_t d_mid[8];
+							for (int i = 0; i < 8; i++) {
+								int32_t st_w = noise_wstep_slope(v[i], v[i + 8], x);
+								d_mid[i] = v[i] + (uint32_t)(((int64_t)st_w * uw) >> 16);
+							}
+							uint32_t c_mid[4];
+							for (int i = 0; i < 4; i++) {
+								int32_t st_z = noise_wstep_slope(d_mid[i], d_mid[i + 4], x);
+								c_mid[i] = d_mid[i] + (uint32_t)(((int64_t)st_z * uz) >> 16);
+							}
+							int32_t s0 = noise_wstep_slope(c_mid[0], c_mid[2], x);
+							int32_t s1 = noise_wstep_slope(c_mid[1], c_mid[3], x);
+							uint32_t b0 = c_mid[0] + (uint32_t)(((int64_t)s0 * uy) >> 16);
+							uint32_t b1 = c_mid[1] + (uint32_t)(((int64_t)s1 * uy) >> 16);
+							int32_t st = noise_wstep_slope(b0, b1, x);
+							raw = b0 + (uint32_t)(((int64_t)st * ux) >> 16);
+						}
+
+						int32_t sample;
+						if (lay->amp == 0) {
+							sample = (int32_t)raw;
+						} else {
+							int32_t val = (int32_t)(raw >> 16) - 128;
+							if (lay->seed_mode & CHAFF_LAYER_RIDGED)
+								val = 64 - abs(val);
+							if (lay->contrast != 0 && lay->contrast != 256)
+								val = (val * (int32_t)lay->contrast) >> 8;
+							sample = (val * (int32_t)lay->amp) >> 7;
+						}
+						row_out[c] += sample;
 					}
-					row_out[c] += sample;
 				}
 			}
 		}
@@ -903,6 +960,7 @@ typedef struct {
 	noise_wcache_t caches[16];
 	const noise_cascade_t *cfg;
 	uint8_t dim;
+	int16_t w;
 } noise_scanline_t;
 
 static inline void
@@ -945,6 +1003,9 @@ noise_scanline_eval_row(noise_scanline_t *scan,
 			if (scan->dim == 2) {
 				int16_t p[2] = { py, px };
 				raw = noise_wpoint_c(c, p, oct->shift, 8, oct_seed, 2, NOISE_FADE);
+			} else if (scan->dim == 4) {
+				int16_t p[4] = { scan->w, z, py, px };
+				raw = noise_wpoint_c(c, p, oct->shift, 8, oct_seed, 4, NOISE_FADE);
 			} else {
 				int16_t p[3] = { z, py, px };
 				raw = noise_wpoint_c(c, p, oct->shift, 8, oct_seed, 3, NOISE_FADE);
@@ -1019,6 +1080,27 @@ noise_sample_3d(const noise_cascade_t *cfg, int16_t x, int16_t y, int16_t z)
 	return total;
 }
 
+static inline int32_t
+noise_sample_4d(const noise_cascade_t *cfg, int16_t x, int16_t y, int16_t z, int16_t w)
+{
+	if (!cfg || cfg->count == 0) return 0;
+	int32_t total = 0;
+	for (uint8_t i = 0; i < cfg->count; i++) {
+		const noise_octave_t *oct = &cfg->octaves[i];
+		uint32_t oct_seed = cfg->seed ^ (uint32_t)(i * 0x85EBCA77u + 1);
+		int16_t px = x, py = y, pz = z, pw = w;
+		if (oct->skew_x) px = (int16_t)(px + py / oct->skew_x);
+		if (oct->skew_y) py = (int16_t)(py - px / oct->skew_y);
+		int16_t p[4] = { pw, pz, py, px };
+		uint32_t raw = noise_wpoint_n(p, oct->shift, 8, oct_seed, 4, NOISE_FADE);
+		int32_t val = (int32_t)(raw >> 16) - 128;
+		if (oct->contrast != 0 && oct->contrast != 256)
+			val = (val * (int32_t)oct->contrast) >> 8;
+		total += (val * (int32_t)oct->amp) >> 7;
+	}
+	return total;
+}
+
 /* Canonical declarative libchaff aliases */
 typedef noise_octave_t   chaff_octave_t;
 typedef noise_cascade_t  chaff_cascade_t;
@@ -1057,6 +1139,12 @@ static inline int32_t
 chaff_sample_3d(const chaff_cascade_t *cfg, int16_t x, int16_t y, int16_t z)
 {
 	return noise_sample_3d(cfg, x, y, z);
+}
+
+static inline int32_t
+chaff_sample_4d(const chaff_cascade_t *cfg, int16_t x, int16_t y, int16_t z, int16_t w)
+{
+	return noise_sample_4d(cfg, x, y, z, w);
 }
 
 #endif /* TTYPT_NOISE_H */
