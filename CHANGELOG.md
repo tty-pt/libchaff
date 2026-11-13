@@ -2,6 +2,13 @@
 
 All notable changes to `libchaff` (`@tty-pt/chaff`) are documented in this file.
 
+## [1.1.0] - 2026-11-13
+
+### Added
+- Banded 2D flow evaluation with smoothstep Nyquist transitions (`chaff_eval_flow_2d_banded`, `chaff_glsl_ref_eval_flow_2d_banded`).
+- Calibrated 3D atmospheric Ekman spiral with veer angle up to 28 degrees.
+- Upgraded substrate baseline to @tty-pt/stele@^1.6.0 (>=1.6.0).
+
 ## [1.0.0] - 2026-11-11
 
 ### Added

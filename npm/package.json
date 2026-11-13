@@ -1,6 +1,6 @@
 {
   "name": "@tty-pt/chaff",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "type": "module",
   "description": "Universal Node.js and Browser WebAssembly bindings for libchaff N-dimensional procedural noise and lattice stepping",
   "main": "dist/index.js",
@@ -19,10 +19,10 @@
     "test": "node --test tests/chaff.test.mjs"
   },
   "peerDependencies": {
-    "@tty-pt/stele": ">=1.5.0"
+    "@tty-pt/stele": ">=1.6.0"
   },
   "devDependencies": {
-    "@tty-pt/stele": "^1.5.2"
+    "@tty-pt/stele": "^1.6.0"
   },
   "keywords": [
     "chaff",

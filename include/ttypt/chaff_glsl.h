@@ -202,9 +202,12 @@
 	"    float spanZ = max(16.0, zTop - zBase);\n" \
 	"    float h = clamp((worldPos.z - zBase) / spanZ, 0.0, 1.0);\n" \
 	"    vec4 synFlow = chaff_eval_synoptic_flow_2d(worldPos.xy, anim_time, fw);\n" \
-	"    vec4 sfcFlow = chaff_eval_flow_2d(worldPos.xy, anim_time);\n" \
-	"    /* Ekman spiral: veers clockwise up to 22 degrees with altitude, speed increases with h^1.35 */\n" \
-	"    float veerAngle = h * 0.384;\n" \
+	"    float w0_sfc = smoothstep(0.45, 0.12, 0.0055 * fw);\n" \
+	"    float w1_sfc = smoothstep(0.45, 0.12, 0.0280 * fw);\n" \
+	"    float w2_sfc = smoothstep(0.45, 0.12, 0.1200 * fw);\n" \
+	"    vec4 sfcFlow = chaff_eval_flow_2d_banded(worldPos.xy, anim_time, vec3(w0_sfc, w1_sfc, w2_sfc));\n" \
+	"    /* Ekman spiral: veers clockwise up to 28 degrees with altitude, speed increases with h^1.35 */\n" \
+	"    float veerAngle = h * 0.488;\n" \
 	"    float cosV = cos(veerAngle), sinV = sin(veerAngle);\n" \
 	"    vec2 baseDir = normalize(mix(sfcFlow.xy, synFlow.xy, 0.35 + 0.45 * h));\n" \
 	"    vec2 atmoDir = vec2(baseDir.x * cosV - baseDir.y * sinV, baseDir.x * sinV + baseDir.y * cosV);\n" \
@@ -980,6 +983,90 @@ static inline void chaff_glsl_ref_eval_synoptic_flow_2d(float wx, float wy, floa
 	if (out_warp_x) *out_warp_x = synWarpX;
 }
 
+static inline void chaff_glsl_ref_eval_flow_2d_banded(float wx, float wy, float anim_time,
+                                                      float w0_nyq, float w1_nyq, float w2_nyq,
+                                                      float *out_dir_x, float *out_dir_y,
+                                                      float *out_gust, float *out_catspaw) {
+	if (w0_nyq <= 0.001f) {
+		if (out_dir_x)   *out_dir_x   = 0.741f;
+		if (out_dir_y)   *out_dir_y   = -0.671f;
+		if (out_gust)    *out_gust    = 0.65f;
+		if (out_catspaw) *out_catspaw = 0.0f;
+		return;
+	}
+	float raw_t0 = anim_time * 0.05f;
+	float t0 = raw_t0 - 1024.0f * floorf(raw_t0 / 1024.0f);
+	float p0x = wx * 0.0055f - 0.741f * t0;
+	float p0y = wy * 0.0055f + 0.671f * t0;
+	float w0v = 0.5f, w0gx = 0.0f, w0gy = 0.0f;
+	chaff_glsl_ref_grad_noise2d(p0x, p0y, 0x57494E44u, &w0v, &w0gx, &w0gy);
+
+	float bwx = 0.741f - w0gy * (0.28f * w0_nyq);
+	float bwy = -0.671f + w0gx * (0.28f * w0_nyq);
+	float bw_inv = 1.0f / sqrtf(bwx * bwx + bwy * bwy + 1e-6f);
+	bwx *= bw_inv;
+	bwy *= bw_inv;
+
+	float w1v = 0.5f, w1gx = 0.0f, w1gy = 0.0f;
+	float lwx = bwx, lwy = bwy;
+	if (w1_nyq > 0.001f) {
+		float raw_t1 = anim_time * 0.12f;
+		float t1 = raw_t1 - 1024.0f * floorf(raw_t1 / 1024.0f);
+		float u1x = wx * 0.028f + w0gx * 0.65f;
+		float u1y = wy * 0.028f + w0gy * 0.65f;
+		float p1x = ( 0.8f * u1x + 0.6f * u1y) - 0.822f * t1;
+		float p1y = (-0.6f * u1x + 0.8f * u1y) + 0.569f * t1;
+		chaff_glsl_ref_grad_noise2d(p1x, p1y, 0x47555354u, &w1v, &w1gx, &w1gy);
+		float mgx =  0.8f * w1gx - 0.6f * w1gy;
+		float mgy =  0.6f * w1gx + 0.8f * w1gy;
+		lwx = bwx - mgy * (0.22f * w1_nyq);
+		lwy = bwy + mgx * (0.22f * w1_nyq);
+		float lw_inv = 1.0f / sqrtf(lwx * lwx + lwy * lwy + 1e-6f);
+		lwx *= lw_inv;
+		lwy *= lw_inv;
+	}
+
+	float w2v = 0.5f, w2gx = 0.0f, w2gy = 0.0f;
+	float fwx = lwx, fwy = lwy;
+	if (w2_nyq > 0.001f) {
+		float raw_t2 = anim_time * 0.22f;
+		float t2 = raw_t2 - 1024.0f * floorf(raw_t2 / 1024.0f);
+		float r1x =  0.8f * (wx * 0.120f) + 0.6f * (wy * 0.120f) + w0gx * 0.45f + w1gx * 0.55f;
+		float r1y = -0.6f * (wx * 0.120f) + 0.8f * (wy * 0.120f) + w0gy * 0.45f + w1gy * 0.55f;
+		float p2x = ( 0.8f * r1x + 0.6f * r1y) - 0.640f * t2;
+		float p2y = (-0.6f * r1x + 0.8f * r1y) + 0.768f * t2;
+		chaff_glsl_ref_grad_noise2d(p2x, p2y, 0x45444459u, &w2v, &w2gx, &w2gy);
+		float u2gx =  0.28f * w2gx - 0.96f * w2gy;
+		float u2gy =  0.96f * w2gx + 0.28f * w2gy;
+		fwx = lwx - u2gy * (0.16f * w2_nyq);
+		fwy = lwy + u2gx * (0.16f * w2_nyq);
+		float fw_inv = 1.0f / sqrtf(fwx * fwx + fwy * fwy + 1e-6f);
+		fwx *= fw_inv;
+		fwy *= fw_inv;
+	}
+
+	float gust = 0.65f + 0.45f * (w0v - 0.5f) * w0_nyq + 0.55f * (w1v - 0.38f) * w1_nyq + 0.30f * (w2v - 0.42f) * w2_nyq;
+	if (gust < 0.25f) gust = 0.25f;
+	if (gust > 1.35f) gust = 1.35f;
+
+	float cp_raw = (w1v * 0.62f + w2v * 0.38f - 0.38f) / (0.76f - 0.38f);
+	if (cp_raw < 0.0f) cp_raw = 0.0f;
+	if (cp_raw > 1.0f) cp_raw = 1.0f;
+	float cp = cp_raw * cp_raw * (3.0f - 2.0f * cp_raw) * w1_nyq;
+
+	if (out_dir_x)   *out_dir_x   = fwx;
+	if (out_dir_y)   *out_dir_y   = fwy;
+	if (out_gust)    *out_gust    = gust;
+	if (out_catspaw) *out_catspaw = cp;
+}
+
+static inline float chaff_glsl_ref_smoothstep(float e0, float e1, float x) {
+	float t = (x - e0) / (e1 - e0);
+	if (t < 0.0f) t = 0.0f;
+	if (t > 1.0f) t = 1.0f;
+	return t * t * (3.0f - 2.0f * t);
+}
+
 static inline void chaff_glsl_ref_eval_wind_3d(float wx, float wy, float wz,
                                                float zBase, float zTop, float anim_time, float fw,
                                                float *out_dir_x, float *out_dir_y,
@@ -991,9 +1078,12 @@ static inline void chaff_glsl_ref_eval_wind_3d(float wx, float wy, float wz,
 	if (h > 1.0f) h = 1.0f;
 	float synVx = 0.741f, synVy = -0.671f, synConv = 0.5f, synWarpX = 0.0f;
 	chaff_glsl_ref_eval_synoptic_flow_2d(wx, wy, anim_time, fw, &synVx, &synVy, &synConv, &synWarpX);
+	float w0_sfc = chaff_glsl_ref_smoothstep(0.45f, 0.12f, 0.0055f * fw);
+	float w1_sfc = chaff_glsl_ref_smoothstep(0.45f, 0.12f, 0.0280f * fw);
+	float w2_sfc = chaff_glsl_ref_smoothstep(0.45f, 0.12f, 0.1200f * fw);
 	float sfcVx = 0.741f, sfcVy = -0.671f, sfcGust = 0.65f, sfcCp = 0.0f;
-	chaff_glsl_ref_eval_flow_2d(wx, wy, anim_time, &sfcVx, &sfcVy, &sfcGust, &sfcCp);
-	float veerAngle = h * 0.384f;
+	chaff_glsl_ref_eval_flow_2d_banded(wx, wy, anim_time, w0_sfc, w1_sfc, w2_sfc, &sfcVx, &sfcVy, &sfcGust, &sfcCp);
+	float veerAngle = h * 0.488f;
 	float cosV = cosf(veerAngle), sinV = sinf(veerAngle);
 	float bBlend = 0.35f + 0.45f * h;
 	float bvx = (1.0f - bBlend) * sfcVx + bBlend * synVx;
