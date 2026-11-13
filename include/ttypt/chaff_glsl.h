@@ -181,6 +181,38 @@
 	"}\n" \
 	"vec4 chaff_eval_flow_2d(vec2 worldPos, float anim_time) {\n" \
 	"    return chaff_eval_flow_2d_banded(worldPos, anim_time, vec3(1.0, 1.0, 1.0));\n" \
+	"}\n" \
+	"/* Synoptic & Regional Geostrophic Curl Flow: planetary Rossby wave streamfunction psi0 (lambda~2200km)\n" \
+	" * and regional jet psi1 (lambda~180km) driving continental cyclone commas and frontal convergence ridges. */\n" \
+	"vec4 chaff_eval_synoptic_flow_2d(vec2 worldPos, float anim_time, float fw) {\n" \
+	"    const vec2 prevDir = vec2(0.741, -0.671);\n" \
+	"    const vec2 prevPerp = vec2(0.671, 0.741);\n" \
+	"    float tFlow = mod(anim_time * 0.005, 1024.0);\n" \
+	"    vec3 psi0 = chaff_grad_noise2d(worldPos * 0.00000042 - prevDir * (tFlow * 0.40), 0x4359434Cu);\n" \
+	"    vec3 psi1 = chaff_grad_noise2d(worldPos * 0.00000180 + vec2(-psi0.z, psi0.y) * 0.30 - prevDir * tFlow, 0x5354524Du);\n" \
+	"    vec2 synWarp = vec2(-psi0.z, psi0.y) * 260000.0 + vec2(-psi1.z, psi1.y) * 68000.0;\n" \
+	"    vec2 vSyn = normalize(prevDir + vec2(-psi0.z, psi0.y) * 0.48 + vec2(-psi1.z, psi1.y) * 0.28);\n" \
+	"    float convEnv = clamp(0.50 + 0.40 * (psi0.x - 0.50) + 0.30 * (psi1.x - 0.50), 0.0, 1.0);\n" \
+	"    return vec4(vSyn.x, vSyn.y, convEnv, synWarp.x);\n" \
+	"}\n" \
+	"/* 3D Atmospheric Wind & Ekman Spiral Shear: evaluates horizontal wind direction with altitude veering,\n" \
+	" * vertical wind-shear displacement vector S_shear(z), gust envelope, and vertical updraft velocity. */\n" \
+	"void chaff_eval_wind_3d(vec3 worldPos, float zBase, float zTop, float anim_time, float fw,\n" \
+	"                        out vec2 outWindDir, out vec2 outShearDisp, out float outGust, out float outUpdraft) {\n" \
+	"    float spanZ = max(16.0, zTop - zBase);\n" \
+	"    float h = clamp((worldPos.z - zBase) / spanZ, 0.0, 1.0);\n" \
+	"    vec4 synFlow = chaff_eval_synoptic_flow_2d(worldPos.xy, anim_time, fw);\n" \
+	"    vec4 sfcFlow = chaff_eval_flow_2d(worldPos.xy, anim_time);\n" \
+	"    /* Ekman spiral: veers clockwise up to 22 degrees with altitude, speed increases with h^1.35 */\n" \
+	"    float veerAngle = h * 0.384;\n" \
+	"    float cosV = cos(veerAngle), sinV = sin(veerAngle);\n" \
+	"    vec2 baseDir = normalize(mix(sfcFlow.xy, synFlow.xy, 0.35 + 0.45 * h));\n" \
+	"    vec2 atmoDir = vec2(baseDir.x * cosV - baseDir.y * sinV, baseDir.x * sinV + baseDir.y * cosV);\n" \
+	"    float atmoSpeed = 1.0 + 0.85 * pow(h, 1.35);\n" \
+	"    outWindDir = atmoDir;\n" \
+	"    outShearDisp = atmoDir * (pow(h, 1.25) * spanZ * 0.35) * atmoSpeed;\n" \
+	"    outGust = clamp(mix(sfcFlow.z, 1.0 + 0.50 * (synFlow.z - 0.5), h), 0.25, 1.75);\n" \
+	"    outUpdraft = clamp(0.45 * synFlow.z + 0.35 * sfcFlow.z + 0.20 * sfcFlow.w, 0.10, 1.50);\n" \
 	"}\n"
 
 /* Continuous cubic Hermite interpolation matching noise_wcorners and noise_wstep.
@@ -917,6 +949,74 @@ static inline void chaff_glsl_ref_eval_flow_2d(float wx, float wy, float anim_ti
 	if (out_dir_y)   *out_dir_y   = fwy;
 	if (out_gust)    *out_gust    = gust;
 	if (out_catspaw) *out_catspaw = cp;
+}
+
+static inline void chaff_glsl_ref_eval_synoptic_flow_2d(float wx, float wy, float anim_time, float fw,
+                                                        float *out_vx, float *out_vy, float *out_conv, float *out_warp_x) {
+	(void)fw;
+	const float prevDirX = 0.741f, prevDirY = -0.671f;
+	float raw_tFlow = anim_time * 0.005f;
+	float tFlow = raw_tFlow - 1024.0f * floorf(raw_tFlow / 1024.0f);
+	float psi0_v = 0.5f, psi0_gx = 0.0f, psi0_gy = 0.0f;
+	chaff_glsl_ref_grad_noise2d(wx * 0.00000042f - prevDirX * (tFlow * 0.40f),
+	                            wy * 0.00000042f - prevDirY * (tFlow * 0.40f),
+	                            0x4359434Cu, &psi0_v, &psi0_gx, &psi0_gy);
+	float psi1_v = 0.5f, psi1_gx = 0.0f, psi1_gy = 0.0f;
+	chaff_glsl_ref_grad_noise2d(wx * 0.00000180f + (-psi0_gy) * 0.30f - prevDirX * tFlow,
+	                            wy * 0.00000180f + psi0_gx * 0.30f - prevDirY * tFlow,
+	                            0x5354524Du, &psi1_v, &psi1_gx, &psi1_gy);
+	float synWarpX = (-psi0_gy) * 260000.0f + (-psi1_gy) * 68000.0f;
+	float synVx = prevDirX + (-psi0_gy) * 0.48f + (-psi1_gy) * 0.28f;
+	float synVy = prevDirY + psi0_gx * 0.48f + psi1_gx * 0.28f;
+	float synInv = 1.0f / sqrtf(synVx * synVx + synVy * synVy + 1e-6f);
+	synVx *= synInv;
+	synVy *= synInv;
+	float conv = 0.50f + 0.40f * (psi0_v - 0.50f) + 0.30f * (psi1_v - 0.50f);
+	if (conv < 0.0f) conv = 0.0f;
+	if (conv > 1.0f) conv = 1.0f;
+	if (out_vx) *out_vx = synVx;
+	if (out_vy) *out_vy = synVy;
+	if (out_conv) *out_conv = conv;
+	if (out_warp_x) *out_warp_x = synWarpX;
+}
+
+static inline void chaff_glsl_ref_eval_wind_3d(float wx, float wy, float wz,
+                                               float zBase, float zTop, float anim_time, float fw,
+                                               float *out_dir_x, float *out_dir_y,
+                                               float *out_shear_x, float *out_shear_y,
+                                               float *out_gust, float *out_updraft) {
+	float spanZ = (zTop - zBase) > 16.0f ? (zTop - zBase) : 16.0f;
+	float h = (wz - zBase) / spanZ;
+	if (h < 0.0f) h = 0.0f;
+	if (h > 1.0f) h = 1.0f;
+	float synVx = 0.741f, synVy = -0.671f, synConv = 0.5f, synWarpX = 0.0f;
+	chaff_glsl_ref_eval_synoptic_flow_2d(wx, wy, anim_time, fw, &synVx, &synVy, &synConv, &synWarpX);
+	float sfcVx = 0.741f, sfcVy = -0.671f, sfcGust = 0.65f, sfcCp = 0.0f;
+	chaff_glsl_ref_eval_flow_2d(wx, wy, anim_time, &sfcVx, &sfcVy, &sfcGust, &sfcCp);
+	float veerAngle = h * 0.384f;
+	float cosV = cosf(veerAngle), sinV = sinf(veerAngle);
+	float bBlend = 0.35f + 0.45f * h;
+	float bvx = (1.0f - bBlend) * sfcVx + bBlend * synVx;
+	float bvy = (1.0f - bBlend) * sfcVy + bBlend * synVy;
+	float bInv = 1.0f / sqrtf(bvx * bvx + bvy * bvy + 1e-6f);
+	bvx *= bInv;
+	bvy *= bInv;
+	float atmoDirX = bvx * cosV - bvy * sinV;
+	float atmoDirY = bvx * sinV + bvy * cosV;
+	float atmoSpeed = 1.0f + 0.85f * powf(h, 1.35f);
+	float shearMag = powf(h, 1.25f) * spanZ * 0.35f * atmoSpeed;
+	float gust = (1.0f - h) * sfcGust + h * (1.0f + 0.50f * (synConv - 0.5f));
+	if (gust < 0.25f) gust = 0.25f;
+	if (gust > 1.75f) gust = 1.75f;
+	float updraft = 0.45f * synConv + 0.35f * sfcGust + 0.20f * sfcCp;
+	if (updraft < 0.10f) updraft = 0.10f;
+	if (updraft > 1.50f) updraft = 1.50f;
+	if (out_dir_x) *out_dir_x = atmoDirX;
+	if (out_dir_y) *out_dir_y = atmoDirY;
+	if (out_shear_x) *out_shear_x = atmoDirX * shearMag;
+	if (out_shear_y) *out_shear_y = atmoDirY * shearMag;
+	if (out_gust) *out_gust = gust;
+	if (out_updraft) *out_updraft = updraft;
 }
 
 #endif /* TTYPT_CHAFF_GLSL_H */

@@ -790,7 +790,36 @@ int main(void)
 		assert(gust >= 0.25f && gust <= 1.35f);
 		assert(cp >= 0.0f && cp <= 1.0f);
 
-		printf("PASS: chaff_sample_flow_2d, chaff_band_range_for_step_q16, and GLSL grad_noise4d/flow_2d reference verified\n");
+		/* Test synoptic 2D flow & 3D Ekman wind-shear reference */
+		float syn_vx = 0.0f, syn_vy = 0.0f, syn_conv = 0.0f, syn_warp = 0.0f;
+		chaff_glsl_ref_eval_synoptic_flow_2d(120.0f, -85.0f, 14.5f, 1.0f, &syn_vx, &syn_vy, &syn_conv, &syn_warp);
+		float syn_norm = sqrtf(syn_vx * syn_vx + syn_vy * syn_vy);
+		assert(fabsf(syn_norm - 1.0f) < 1e-3f);
+		assert(syn_conv >= 0.0f && syn_conv <= 1.0f);
+
+		float atmo_dx = 0.0f, atmo_dy = 0.0f, shear_x = 0.0f, shear_y = 0.0f, atmo_gust = 0.0f, updraft = 0.0f;
+		chaff_glsl_ref_eval_wind_3d(120.0f, -85.0f, 380.0f, 380.0f, 980.0f, 14.5f, 1.0f,
+		                            &atmo_dx, &atmo_dy, &shear_x, &shear_y, &atmo_gust, &updraft);
+		assert(fabsf(shear_x) < 1e-4f && fabsf(shear_y) < 1e-4f); /* Zero shear at cloud base h=0 */
+		assert(updraft >= 0.10f && updraft <= 1.50f);
+
+		/* At cloud top (h=1), shear displacement is positive downwind */
+		float top_dx = 0.0f, top_dy = 0.0f, top_sx = 0.0f, top_sy = 0.0f, top_gust = 0.0f, top_updraft = 0.0f;
+		chaff_glsl_ref_eval_wind_3d(120.0f, -85.0f, 980.0f, 380.0f, 980.0f, 14.5f, 1.0f,
+		                            &top_dx, &top_dy, &top_sx, &top_sy, &top_gust, &top_updraft);
+		float top_shear_len = sqrtf(top_sx * top_sx + top_sy * top_sy);
+		assert(top_shear_len > 100.0f); /* 600 * 0.35 * 1.85 ~ 388 units */
+
+		/* Temporal stability at t = 100,000s */
+		float t_early_sx = 0.0f, t_early_sy = 0.0f, t_late_sx = 0.0f, t_late_sy = 0.0f;
+		chaff_glsl_ref_eval_wind_3d(120.0f, -85.0f, 680.0f, 380.0f, 980.0f, 10.0f, 1.0f,
+		                            NULL, NULL, &t_early_sx, &t_early_sy, NULL, NULL);
+		chaff_glsl_ref_eval_wind_3d(120.0f, -85.0f, 680.0f, 380.0f, 980.0f, 100000.0f, 1.0f,
+		                            NULL, NULL, &t_late_sx, &t_late_sy, NULL, NULL);
+		assert(sqrtf(t_early_sx * t_early_sx + t_early_sy * t_early_sy) > 10.0f);
+		assert(sqrtf(t_late_sx * t_late_sx + t_late_sy * t_late_sy) > 10.0f);
+
+		printf("PASS: chaff_sample_flow_2d, chaff_band_range_for_step_q16, synoptic flow & 3D Ekman wind shear verified\n");
 	}
 
 	printf("=== ALL CANONICAL LIBCHAFF TESTS PASSED ===\n");
