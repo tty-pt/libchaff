@@ -7,8 +7,11 @@ CFLAGS ?= -Wall -Wextra -Werror -O2 -Iinclude
 LDLIBS ?= -lxxhash
 
 WASM_CC ?= clang
-WASM_CFLAGS ?= --target=wasm32-wasi -ffreestanding -flto -O3 -D__wasm__ -fvisibility=hidden -I./include -I./npm/include -I../mk/include -I/usr/include
-WASM_LDFLAGS ?= -mexec-model=reactor -Wl,--gc-sections -Wl,--no-entry -Wl,--allow-undefined -Wl,--export=malloc -Wl,--export=free -Wl,--export=noise_wasm_point_1d -Wl,--export=noise_wasm_point_2d -Wl,--export=noise_wasm_point_3d -Wl,--export=noise_wasm_point_4d -Wl,--export=noise_wasm_point_n -Wl,--export=noise_wasm_octaves
+WASM_CFLAGS ?= --target=wasm32-wasi -ffreestanding -flto -O3 -D__wasm__ -fvisibility=hidden -I./include -I./npm/include -I../libstele/include -I../mk/include -I/usr/include
+WASM_LDFLAGS ?= -mexec-model=reactor -Wl,--gc-sections -Wl,--no-entry -Wl,--allow-undefined \
+	-Wl,--import-memory -Wl,-z,stack-size=32768 -Wl,--global-base=1638400 \
+	-Wl,--wrap=malloc -Wl,--wrap=free -Wl,--wrap=calloc -Wl,--wrap=realloc \
+	-Wl,--export=noise_wasm_point_1d -Wl,--export=noise_wasm_point_2d -Wl,--export=noise_wasm_point_3d -Wl,--export=noise_wasm_point_4d -Wl,--export=noise_wasm_point_n -Wl,--export=noise_wasm_octaves
 
 SO_CFLAGS ?= -mgeneral-regs-only
 
@@ -58,9 +61,9 @@ lib/libchaff.so: src/libchaff.c include/ttypt/noise.h include/ttypt/chaff.h
 
 wasm: npm/dist/chaff.wasm
 
-npm/dist/chaff.wasm: npm/wasm/chaff_wasm.c include/ttypt/noise.h include/ttypt/chaff.h
+npm/dist/chaff.wasm: npm/wasm/chaff_wasm.c include/ttypt/noise.h include/ttypt/chaff.h ../mk/wasm_alloc_shim.c
 	@mkdir -p npm/dist
-	$(WASM_CC) $(WASM_CFLAGS) $(WASM_LDFLAGS) npm/wasm/chaff_wasm.c -o $@
+	$(WASM_CC) $(WASM_CFLAGS) $(WASM_LDFLAGS) npm/wasm/chaff_wasm.c ../mk/wasm_alloc_shim.c -o $@
 	@ln -sf chaff.wasm npm/dist/noise.wasm
 
 npm-build: wasm
