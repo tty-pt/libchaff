@@ -45,6 +45,21 @@ void chaff_fill_slice_3d_sym(const chaff_field_t *field, int16_t z,
                             int16_t origin_x, int16_t origin_y,
                             uint16_t width, uint16_t height,
                             int32_t *out_val, int16_t *out_grad_x, int16_t *out_grad_y);
+int32_t ttypt_noise_sample_4d(const noise_cascade_t *cfg, int16_t x, int16_t y, int16_t z, int16_t w);
+void chaff_oct_sym(uint32_t *m, int16_t *s, size_t oct_n, octave_t *oct, unsigned seed, unsigned cy, uint8_t dim);
+int32_t chaff_sample_4d_sym(const noise_cascade_t *cfg, int16_t x, int16_t y, int16_t z, int16_t w);
+void chaff_band_range_for_step_q16_sym(const chaff_field_t *field, uint8_t min_shift, const int32_t step_q16[], uint8_t *out_layer_lo, uint8_t *out_layer_hi);
+void chaff_fill_lod_sym(const chaff_field_t *field, uint8_t min_shift, const chaff_coord_t origin[], const int32_t step_q16[], const uint16_t n[], int32_t *out, size_t stride, unsigned mode);
+chaff_sample_2d_t chaff_sample_grad_2d_sym(const chaff_field_t *field, int16_t wx, int16_t wy);
+chaff_sample_4d_t chaff_sample_grad_4d_sym(const chaff_field_t *field, int16_t x, int16_t y, int16_t z, int16_t w);
+void chaff_fill_slice_4d_sym(const chaff_field_t *field, int16_t z, int16_t w, int16_t origin_x, int16_t origin_y, uint16_t width, uint16_t height, int32_t *out_val, int16_t *out_grad_x, int16_t *out_grad_y, int16_t *out_grad_z, int16_t *out_grad_w);
+chaff_sample_2d_t chaff_sample_rugged_2d_ex_sym(const chaff_field_t *field, int16_t wx, int16_t wy, int32_t cos_q15, int32_t sin_q15);
+chaff_sample_2d_t chaff_sample_rugged_2d_sym(const chaff_field_t *field, int16_t wx, int16_t wy);
+uint32_t chaff_wpoint_periodic_2d_sym(int32_t x, int32_t y, uint8_t shift, uint8_t period_shift, uint8_t vshift, uint32_t seed);
+uint32_t chaff_sample_periodic_2d_sym(int32_t rx, int32_t ry, uint8_t shift, uint8_t period_shift, uint8_t vshift, uint32_t seed);
+int32_t chaff_fbm_rotated_2d_ex_sym(int32_t x, int32_t y, uint8_t min_shift, uint8_t max_shift, uint8_t ridged_min_shift, uint8_t amp_min_shift, int16_t base_amp, uint32_t seed, uint32_t seed_salt, int32_t cos_q15, int32_t sin_q15, uint8_t vshift, unsigned fade_flags, uint8_t out_shift);
+int32_t chaff_fbm_rotated_2d_q12_4_sym(int32_t x, int32_t y, uint8_t min_shift, uint8_t max_shift, uint8_t ridged_min_shift, uint8_t amp_min_shift, int16_t base_amp, uint32_t seed, uint32_t seed_salt, int32_t cos_q15, int32_t sin_q15);
+chaff_flow_2d_t chaff_sample_flow_2d_sym(const chaff_field_t *psi_field, const chaff_flow_desc_t *desc, int16_t x, int16_t y, int16_t t);
 
 int main(void)
 {
@@ -76,13 +91,15 @@ int main(void)
 
 	/* 2. ttypt_noise_oct and matrix fills */
 	{
-		uint32_t m1[256], m2[256];
+		uint32_t m1[256], m2[256], m3[256];
 		int16_t s[2] = { 0, 0 };
 		octave_t oct[] = { { 4, 1 } };
 		ttypt_noise_oct(m1, s, 1, oct, 42, 4, 2);
 		noise_oct(m2, s, 1, oct, 42, 4, 2);
+		chaff_oct_sym(m3, s, 1, oct, 42, 4, 2);
 		for (int i = 0; i < 256; i++) {
 			assert(m1[i] == m2[i]);
+			assert(m3[i] == m2[i]);
 		}
 
 		static const noise_octave_t octs[] = {
@@ -151,31 +168,45 @@ int main(void)
 
 		assert(ttypt_noise_sample_3d(&cfg, 15, 25, 35) == noise_sample_3d(&cfg, 15, 25, 35));
 		assert(chaff_sample_3d_sym(&cfg, 15, 25, 35) == noise_sample_3d(&cfg, 15, 25, 35));
+
+		assert(ttypt_noise_sample_4d(&cfg, 15, 25, 35, 45) == noise_sample_4d(&cfg, 15, 25, 35, 45));
+		assert(chaff_sample_4d_sym(&cfg, 15, 25, 35, 45) == noise_sample_4d(&cfg, 15, 25, 35, 45));
 		printf("PASS: exported scanline and sample symbols verified\n");
 	}
 
-	/* 5. Chaff fill, slice, and 3D gradient symbols */
+	/* 5. Chaff fill, LOD, slice, gradient, rugged, periodic, fbm, and flow symbols */
 	{
 		static const chaff_layer_t lay = {
 			.shift = 4, .vshift = 8, .amp = 90, .seed_mode = CHAFF_SEED_SHARED, .contrast = 256
 		};
 		static const chaff_field_t field = {
-			.seed = 0x4321u, .dim = 3, .flags = CHAFF_FLAG_FADE, .nlayers = 1, .layers = &lay
+			.seed = 0x4321u, .dim = 4, .flags = CHAFF_FLAG_FADE, .nlayers = 1, .layers = &lay
 		};
 
-		chaff_coord_t org[3] = { { 0, 0 }, { 0, 0 }, { 0, 0 } };
-		int32_t step[3] = { 65536, 65536, 65536 };
-		uint16_t n[3] = { 2, 8, 8 };
-		int32_t out1[128], out2[128], out_ref[128];
+		chaff_coord_t org[4] = { { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 } };
+		int32_t step[4] = { 65536, 65536, 65536, 65536 };
+		uint16_t n[4] = { 1, 2, 8, 8 };
+		int32_t out1[128], out2[128], out_lod[128], out_ref[128];
 
 		ttypt_chaff_fill(&field, 0, 1, org, step, n, out1, 8, CHAFF_MODE_SET);
 		chaff_fill_sym(&field, 0, 1, org, step, n, out2, 8, CHAFF_MODE_SET);
+		chaff_fill_lod_sym(&field, 0, org, step, n, out_lod, 8, CHAFF_MODE_SET);
 		chaff_fill(&field, 0, 1, org, step, n, out_ref, 8, CHAFF_MODE_SET);
 
 		for (int i = 0; i < 128; i++) {
 			assert(out1[i] == out_ref[i]);
 			assert(out2[i] == out_ref[i]);
+			assert(out_lod[i] == out_ref[i]);
 		}
+
+		uint8_t lo1 = 0, hi1 = 0, lo2 = 0, hi2 = 0;
+		chaff_band_range_for_step_q16_sym(&field, 0, step, &lo1, &hi1);
+		chaff_band_range_for_step_q16(&field, 0, step, &lo2, &hi2);
+		assert(lo1 == lo2 && hi1 == hi2);
+
+		chaff_sample_2d_t g2_sym = chaff_sample_grad_2d_sym(&field, 12, 14);
+		chaff_sample_2d_t g2_ref = chaff_sample_grad_2d(&field, 12, 14);
+		assert(g2_sym.val == g2_ref.val && g2_sym.grad_x == g2_ref.grad_x);
 
 		chaff_sample_3d_t g_sym = chaff_sample_grad_3d_sym(&field, 12, 14, 16);
 		chaff_sample_3d_t g_ref = chaff_sample_grad_3d(&field, 12, 14, 16);
@@ -184,14 +215,35 @@ int main(void)
 		assert(g_sym.grad_y == g_ref.grad_y);
 		assert(g_sym.grad_z == g_ref.grad_z);
 
-		int32_t val_sym[16], val_ref[16];
+		chaff_sample_4d_t g4_sym = chaff_sample_grad_4d_sym(&field, 12, 14, 16, 18);
+		chaff_sample_4d_t g4_ref = chaff_sample_grad_4d(&field, 12, 14, 16, 18);
+		assert(g4_sym.val == g4_ref.val && g4_sym.grad_w == g4_ref.grad_w);
+
+		int32_t val_sym[16], val_ref[16], val4_sym[16], val4_ref[16];
 		chaff_fill_slice_3d_sym(&field, 10, 0, 0, 4, 4, val_sym, NULL, NULL);
 		chaff_fill_slice_3d(&field, 10, 0, 0, 4, 4, val_ref, NULL, NULL);
+		chaff_fill_slice_4d_sym(&field, 10, 5, 0, 0, 4, 4, val4_sym, NULL, NULL, NULL, NULL);
+		chaff_fill_slice_4d(&field, 10, 5, 0, 0, 4, 4, val4_ref, NULL, NULL, NULL, NULL);
 		for (int i = 0; i < 16; i++) {
 			assert(val_sym[i] == val_ref[i]);
+			assert(val4_sym[i] == val4_ref[i]);
 		}
 
-		printf("PASS: exported ttypt_chaff_fill, chaff_fill_sym, grad_3d_sym, and slice_3d_sym verified\n");
+		chaff_sample_2d_t rug_sym = chaff_sample_rugged_2d_sym(&field, 20, -10);
+		chaff_sample_2d_t rug_ref = chaff_sample_rugged_2d(&field, 20, -10);
+		assert(rug_sym.val == rug_ref.val && rug_sym.grad_x == rug_ref.grad_x);
+
+		assert(chaff_wpoint_periodic_2d_sym(100, 200, 4, 10, 8, 1234) == chaff_wpoint_periodic_2d(100, 200, 4, 10, 8, 1234));
+		assert(chaff_sample_periodic_2d_sym(100, 200, 4, 10, 8, 1234) == chaff_sample_periodic_2d(100, 200, 4, 10, 8, 1234));
+		assert(chaff_fbm_rotated_2d_q12_4_sym(100, 200, 2, 6, 5, 2, 1, 1234, 1, CHAFF_ROT_ATAN_COS_Q15, CHAFF_ROT_ATAN_SIN_Q15) ==
+		       chaff_fbm_rotated_2d_q12_4(100, 200, 2, 6, 5, 2, 1, 1234, 1, CHAFF_ROT_ATAN_COS_Q15, CHAFF_ROT_ATAN_SIN_Q15));
+
+		chaff_flow_desc_t fdesc = { 100, -50, 256 };
+		chaff_flow_2d_t fl_sym = chaff_sample_flow_2d_sym(&field, &fdesc, 10, 20, 5);
+		chaff_flow_2d_t fl_ref = chaff_sample_flow_2d(&field, &fdesc, 10, 20, 5);
+		assert(fl_sym.vx_q8 == fl_ref.vx_q8 && fl_sym.vy_q8 == fl_ref.vy_q8 && fl_sym.psi == fl_ref.psi);
+
+		printf("PASS: exported ttypt_chaff_fill, chaff_fill_sym, grad_2d/3d/4d_sym, slice_3d/4d_sym, rugged, periodic, fbm, and flow_2d verified\n");
 	}
 
 	printf("=== ALL SHARED LIBRARY EXPORTED ABI SYMBOLS PASSED ===\n");

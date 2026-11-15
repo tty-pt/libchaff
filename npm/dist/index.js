@@ -11,40 +11,40 @@ export function getChaffWasm() {
 
 export const getNoiseWasm = getChaffWasm;
 
-export function chaffPoint1D(x, seed, shift) {
-  if (nativeBinding && nativeBinding.point1D) {
+export function chaffPoint1D(x, seed, shift, options = {}) {
+  if (!options.wasm && nativeBinding && nativeBinding.point1D) {
     return nativeBinding.point1D(x, seed, shift);
   }
   const wasm = getChaffWasm();
   return wasm.exports.noise_wasm_point_1d(x, seed, shift);
 }
 
-export function chaffPoint2D(x, y, seed, shift) {
-  if (nativeBinding && nativeBinding.point2D) {
+export function chaffPoint2D(x, y, seed, shift, options = {}) {
+  if (!options.wasm && nativeBinding && nativeBinding.point2D) {
     return nativeBinding.point2D(x, y, seed, shift);
   }
   const wasm = getChaffWasm();
   return wasm.exports.noise_wasm_point_2d(x, y, seed, shift);
 }
 
-export function chaffPoint3D(x, y, z, seed, shift) {
-  if (nativeBinding && nativeBinding.point3D) {
+export function chaffPoint3D(x, y, z, seed, shift, options = {}) {
+  if (!options.wasm && nativeBinding && nativeBinding.point3D) {
     return nativeBinding.point3D(x, y, z, seed, shift);
   }
   const wasm = getChaffWasm();
   return wasm.exports.noise_wasm_point_3d(x, y, z, seed, shift);
 }
 
-export function chaffPoint4D(x, y, z, w, seed, shift) {
-  if (nativeBinding && nativeBinding.point4D) {
+export function chaffPoint4D(x, y, z, w, seed, shift, options = {}) {
+  if (!options.wasm && nativeBinding && nativeBinding.point4D) {
     return nativeBinding.point4D(x, y, z, w, seed, shift);
   }
   const wasm = getChaffWasm();
   return wasm.exports.noise_wasm_point_4d(x, y, z, w, seed, shift);
 }
 
-export function chaffPointN(coords, seed, shift) {
-  if (nativeBinding && nativeBinding.pointN) {
+export function chaffPointN(coords, seed, shift, options = {}) {
+  if (!options.wasm && nativeBinding && nativeBinding.pointN) {
     return nativeBinding.pointN(coords, seed, shift);
   }
   const wasm = getChaffWasm();
@@ -57,20 +57,21 @@ export function chaffPointN(coords, seed, shift) {
   return res;
 }
 
-export function chaffOctaves(dim, origin, octaves, seed, cy) {
-  if (nativeBinding && nativeBinding.octaves) {
+export function chaffOctaves(dim, origin, octaves, seed, cy, options = {}) {
+  if (!options.wasm && nativeBinding && nativeBinding.octaves) {
     return nativeBinding.octaves(dim, origin, octaves, seed, cy);
   }
   const wasm = getChaffWasm();
   const substrate = getSubstrate();
   const total = 1 << (dim * cy);
+  const octCount = Math.min(octaves.length, 16);
   const outPtr = wasm.exports.malloc(total * 4);
   const origPtr = wasm.exports.malloc(dim * 2);
+  const octPtr = wasm.exports.malloc(octCount * 8);
+
   const origView = new Int16Array(substrate.memory.buffer, origPtr, dim);
   for (let i = 0; i < dim; i++) origView[i] = origin[i] || 0;
 
-  const octCount = Math.min(octaves.length, 16);
-  const octPtr = wasm.exports.malloc(octCount * 8);
   const octView = new Uint32Array(substrate.memory.buffer, octPtr, octCount * 2);
   for (let i = 0; i < octCount; i++) {
     octView[i * 2] = octaves[i].x;

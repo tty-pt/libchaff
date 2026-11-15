@@ -6,6 +6,7 @@
 #include <math.h>
 #include <ttypt/noise.h>
 #include <ttypt/chaff.h>
+#include <ttypt/chaff_glsl.h>
 
 int main(void)
 {
@@ -423,9 +424,9 @@ int main(void)
 	/* 17. Multi-layer nesting: sum(layers 0..k) + sum(layers k..n) == sum(layers 0..n) */
 	{
 		static const chaff_layer_t layers[] = {
-			{ 7, 8, 100, CHAFF_SEED_PER_LAYER, { 3, -5 }, 256 },
-			{ 5, 8,  50, CHAFF_SEED_PER_LAYER, { 0,  0 }, 512 },
-			{ 3, 8,  20, CHAFF_SEED_PER_LAYER, { 2,  4 }, 256 }
+			{ .shift = 7, .vshift = 8, .amp = 100, .seed_mode = CHAFF_SEED_PER_LAYER, .skew = { 3, -5 }, .contrast = 256 },
+			{ .shift = 5, .vshift = 8, .amp =  50, .seed_mode = CHAFF_SEED_PER_LAYER, .skew = { 0,  0 }, .contrast = 512 },
+			{ .shift = 3, .vshift = 8, .amp =  20, .seed_mode = CHAFF_SEED_PER_LAYER, .skew = { 2,  4 }, .contrast = 256 }
 		};
 		static const chaff_field_t field = {
 			.seed = 0xFEEDFACE, .dim = 2, .flags = CHAFF_FLAG_FADE, .nlayers = 3, .layers = layers
@@ -460,9 +461,9 @@ int main(void)
 	/* 19. chaff_fill_lod: Nyquist-aware band-limiting */
 	{
 		static const chaff_layer_t layers[] = {
-			{ 2, 8, 10, CHAFF_SEED_SHARED, { 0, 0 }, 256 }, /* shift 2 (wavelength 4) */
-			{ 4, 8, 20, CHAFF_SEED_SHARED, { 0, 0 }, 256 }, /* shift 4 (wavelength 16) */
-			{ 7, 8, 40, CHAFF_SEED_SHARED, { 0, 0 }, 256 }  /* shift 7 (wavelength 128) */
+			{ .shift = 2, .vshift = 8, .amp = 10, .seed_mode = CHAFF_SEED_SHARED, .skew = { 0, 0 }, .contrast = 256 }, /* shift 2 (wavelength 4) */
+			{ .shift = 4, .vshift = 8, .amp = 20, .seed_mode = CHAFF_SEED_SHARED, .skew = { 0, 0 }, .contrast = 256 }, /* shift 4 (wavelength 16) */
+			{ .shift = 7, .vshift = 8, .amp = 40, .seed_mode = CHAFF_SEED_SHARED, .skew = { 0, 0 }, .contrast = 256 }  /* shift 7 (wavelength 128) */
 		};
 		static const chaff_field_t field = {
 			.seed = 999, .dim = 2, .flags = 0, .nlayers = 3, .layers = layers
@@ -490,19 +491,19 @@ int main(void)
 	/* 20. chaff_sample_grad_2d: Analytical surface normal slope vs finite difference */
 	{
 		static const chaff_layer_t layers[] = {
-			{ 6, 8, 100, CHAFF_SEED_SHARED, { 0, 0 }, 256 }
+			{ .shift = 6, .vshift = 8, .amp = 100, .seed_mode = CHAFF_SEED_SHARED, .skew = { 0, 0 }, .contrast = 256 }
 		};
 		static const chaff_field_t field = {
 			.seed = 42, .dim = 2, .flags = CHAFF_FLAG_FADE, .nlayers = 1, .layers = layers
 		};
 		int16_t wx = 20, wy = 30;
 		chaff_sample_2d_t s = chaff_sample_grad_2d(&field, wx, wy);
-		assert(s.elevation != 0);
+		assert(s.val != 0);
 
 		/* Finite difference comparison */
 		chaff_sample_2d_t s_px = chaff_sample_grad_2d(&field, (int16_t)(wx + 1), wy);
 		chaff_sample_2d_t s_mx = chaff_sample_grad_2d(&field, (int16_t)(wx - 1), wy);
-		int num_diff_x = (s_px.elevation - s_mx.elevation);
+		int num_diff_x = (s_px.val - s_mx.val);
 		/* Analytical grad_x sign must match numerical slope */
 		if (abs(num_diff_x) > 1) {
 			assert((s.grad_x > 0 && num_diff_x >= 0) || (s.grad_x < 0 && num_diff_x <= 0) || s.grad_x == 0);
@@ -698,8 +699,8 @@ int main(void)
 	/* 28. chaff_fill_slice_3d: 100% bit-exact equivalence with chaff_sample_grad_3d across 2D slices */
 	{
 		static const chaff_layer_t layers[] = {
-			{ 5, 8, 100, CHAFF_SEED_SHARED, { 0, 0 }, 256 },
-			{ 3, 8,  50, CHAFF_SEED_PER_LAYER, { 0, 0 }, 256 }
+			{ .shift = 5, .vshift = 8, .amp = 100, .seed_mode = CHAFF_SEED_SHARED,    .skew = { 0, 0 }, .contrast = 256 },
+			{ .shift = 3, .vshift = 8, .amp =  50, .seed_mode = CHAFF_SEED_PER_LAYER, .skew = { 0, 0 }, .contrast = 256 }
 		};
 		static const chaff_field_t field = {
 			.seed = 0xABCD1234, .dim = 3, .flags = CHAFF_FLAG_FADE, .nlayers = 2, .layers = layers
@@ -820,7 +821,7 @@ int main(void)
 		for (int16_t x = 32700; x < 32760; x++) {
 			chaff_sample_2d_t s1 = chaff_sample_grad_2d(&field_wrap, x, 500);
 			chaff_sample_2d_t s2 = chaff_sample_grad_2d(&field_wrap, (int16_t)(x + 1), 500);
-			int32_t dh = abs(s2.elevation - s1.elevation);
+			int32_t dh = abs(s2.val - s1.val);
 			if (dh > max_step_inside) max_step_inside = dh;
 		}
 
@@ -831,7 +832,7 @@ int main(void)
 
 		chaff_sample_2d_t s_boundary = chaff_sample_grad_2d(&field_wrap, x_boundary, 500);
 		chaff_sample_2d_t s_wrapped  = chaff_sample_grad_2d(&field_wrap, x_next, 500);
-		int32_t step_across_wrap = abs(s_wrapped.elevation - s_boundary.elevation);
+		int32_t step_across_wrap = abs(s_wrapped.val - s_boundary.val);
 
 		/* The step across 32767 -> -32768 is strictly continuous with zero jump discontinuity */
 		assert(step_across_wrap <= max_step_inside * 2);
@@ -862,8 +863,8 @@ int main(void)
 		for (int i = 0; i < 100; i++) {
 			chaff_sample_2d_t s1 = chaff_sample_grad_2d(&field_unrot, (int16_t)(i * 4), (int16_t)(i * 4));
 			chaff_sample_2d_t s2 = chaff_sample_rugged_2d(&field_unrot, (int16_t)(i * 4), (int16_t)(i * 4));
-			if (s1.elevation != 0) unrot_non_zero++;
-			if (s2.elevation != 0) rot_non_zero++;
+			if (s1.val != 0) unrot_non_zero++;
+			if (s2.val != 0) rot_non_zero++;
 		}
 		assert(unrot_non_zero > 80);
 		assert(rot_non_zero > 80);

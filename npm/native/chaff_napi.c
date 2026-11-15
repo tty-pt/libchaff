@@ -5,8 +5,6 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#define XXH_INLINE_ALL 1
-#include <xxhash.h>
 #include <ttypt/noise.h>
 
 static napi_value NoisePoint1D(napi_env env, napi_callback_info info) {
