@@ -13,13 +13,13 @@ TEST_BINS := bin/test_noise${EXE} bin/test_chaff${EXE} bin/test_symbols${EXE} bi
 BENCH_BINS := bin/bench_noise${EXE}
 
 sync-npm-headers:
-	@mkdir -p npm/include/ttypt
-	@cp -f include/ttypt/noise.h include/ttypt/chaff.h include/ttypt/chaff_glsl.h npm/include/ttypt/
+	@install -d npm/include/ttypt
+	@install -m 644 include/ttypt/noise.h include/ttypt/chaff.h include/ttypt/chaff_glsl.h npm/include/ttypt/
 
 all: sync-npm-headers
 
 wasm: sync-npm-headers ${wasmtarget}
-	@cp -f npm/dist/chaff.wasm npm/dist/noise.wasm
+	@install -m 644 npm/dist/chaff.wasm npm/dist/noise.wasm
 
 test: all $(TEST_BINS)
 	./bin/test_noise${EXE}
