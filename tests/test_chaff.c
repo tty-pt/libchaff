@@ -1019,6 +1019,73 @@ int main(void)
 		printf("PASS: 3D/4D skew & period_shift parity, chaff_fill period_shift, and noise_point_n_ex verified\n");
 	}
 
+	/* 21. Continuous Scale-Space Band Decomposition (chaff_octave_weight_q16, chaff_band_weight_q16, chaff_fbm_rotated_2d_step_q12_4) */
+	{
+		/* Point sample (step_q16 <= 0) always returns full weight 65536 */
+		for (uint8_t s = 0; s <= 20; s++) {
+			assert(chaff_octave_weight_q16(s, 0) == 65536u);
+			assert(chaff_octave_weight_q16(s, -100) == 65536u);
+		}
+
+		/* For step = 4.0 wu (4 << 16):
+		 *   - shifts 0..3 (wavelength 1, 2, 4, 8 <= 2*4 = 8): weight == 0
+		 *   - shift 4 (wavelength 16 >= 4*4 = 16): weight == 65536 */
+		int32_t step_4wu = 4 << 16;
+		assert(chaff_octave_weight_q16(0, step_4wu) == 0u);
+		assert(chaff_octave_weight_q16(1, step_4wu) == 0u);
+		assert(chaff_octave_weight_q16(2, step_4wu) == 0u);
+		assert(chaff_octave_weight_q16(3, step_4wu) == 0u);
+		assert(chaff_octave_weight_q16(4, step_4wu) == 65536u);
+		assert(chaff_octave_weight_q16(5, step_4wu) == 65536u);
+
+		/* Midpoint of transition band: wavelength = 16 (shift 4), step = 16 / 3 = 5.3333 wu -> t = 0.5 -> weight = 32768 */
+		int32_t step_mid = (16 << 16) / 3;
+		uint32_t w_mid = chaff_octave_weight_q16(4, step_mid);
+		assert(w_mid > 32700u && w_mid < 32840u);
+
+		/* Monotonicity of chaff_wavelength_weight_q16 across transition band */
+		uint32_t prev_w = 0;
+		for (int32_t wl_q16 = (8 << 16); wl_q16 <= (16 << 16); wl_q16 += (1 << 14)) {
+			uint32_t cur_w = chaff_wavelength_weight_q16(wl_q16, step_4wu);
+			assert(cur_w >= prev_w);
+			prev_w = cur_w;
+		}
+		assert(prev_w == 65536u);
+
+		/* Exact partition of unity: L(lambda, Delta_coarse) + B(lambda; 0, Delta_coarse) == 65536 */
+		for (int32_t st = (1 << 15); st <= (64 << 16); st += (3 << 14)) {
+			for (uint8_t s = 0; s <= 12; s++) {
+				uint32_t w_low = chaff_octave_weight_q16(s, st);
+				uint32_t w_band = chaff_band_weight_q16(s, 0, st);
+				assert(w_low + w_band == 65536u);
+			}
+		}
+
+		/* Scale-filtered chaff_fbm_rotated_2d_step_q12_4:
+		 *   - step_q16 == 0 matches chaff_fbm_rotated_2d_q12_4 bit-for-bit
+		 *   - step_q16 >= (1 << max_shift) early-exits and returns 0 */
+		int32_t fbm_pt = chaff_fbm_rotated_2d_step_q12_4(240, -180, 0, 0, 9, 7, 2, 1, 0x12345678u, 0xBEEFu,
+		                                                 CHAFF_ROT_ATAN_COS_Q15, CHAFF_ROT_ATAN_SIN_Q15);
+		int32_t fbm_ref = chaff_fbm_rotated_2d_q12_4(240, -180, 0, 9, 7, 2, 1, 0x12345678u, 0xBEEFu,
+		                                             CHAFF_ROT_ATAN_COS_Q15, CHAFF_ROT_ATAN_SIN_Q15);
+		assert(fbm_pt == fbm_ref);
+
+		/* When step_q16 = 256 << 16, max_shift = 9 (wavelength 512 <= 2 * 256), returns 0 in O(1) */
+		int32_t fbm_coarse = chaff_fbm_rotated_2d_step_q12_4(240, -180, 256 << 16, 0, 9, 7, 2, 1, 0x12345678u, 0xBEEFu,
+		                                                     CHAFF_ROT_ATAN_COS_Q15, CHAFF_ROT_ATAN_SIN_Q15);
+		assert(fbm_coarse == 0);
+
+		/* When step_q16 = 8 << 16, octaves s=9..5 have full weight (32 >= 4*8=32), s=4..0 have weight 0,
+		 * so result matches chaff_fbm_rotated_2d_q12_4 with min_shift = 5 bit-for-bit! */
+		int32_t fbm_step8 = chaff_fbm_rotated_2d_step_q12_4(240, -180, 8 << 16, 0, 9, 7, 2, 1, 0x12345678u, 0xBEEFu,
+		                                                    CHAFF_ROT_ATAN_COS_Q15, CHAFF_ROT_ATAN_SIN_Q15);
+		int32_t fbm_min5 = chaff_fbm_rotated_2d_q12_4(240, -180, 5, 9, 7, 2, 1, 0x12345678u, 0xBEEFu,
+		                                              CHAFF_ROT_ATAN_COS_Q15, CHAFF_ROT_ATAN_SIN_Q15);
+		assert(fbm_step8 == fbm_min5);
+
+		printf("PASS: continuous Nyquist scale-space weights and scale-filtered fBm verified\n");
+	}
+
 	printf("=== ALL CANONICAL LIBCHAFF TESTS PASSED ===\n");
 	return 0;
 }

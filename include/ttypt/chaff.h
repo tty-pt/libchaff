@@ -76,6 +76,55 @@ chaff_nyquist_shift_q16(const int32_t step_q16[], uint8_t dim)
 	return shift;
 }
 
+/* Continuous C2 Nyquist low-pass transfer function L(lambda, Delta) in Q16 [0..65536]:
+ *   - For step_q16 <= 0 (point sample): returns 65536 (1.0).
+ *   - For wavelength <= 2 * step_q16 (sub-Nyquist): returns 0 (skip evaluation).
+ *   - For wavelength >= 4 * step_q16 (fully resolved): returns 65536 (1.0).
+ *   - For 2 * step_q16 < wavelength < 4 * step_q16: smooth C2 quintic transition. */
+static inline uint32_t
+chaff_wavelength_weight_q16(int32_t wavelength_q16, int32_t step_q16)
+{
+	if (step_q16 <= 0) return 65536u;
+	if (wavelength_q16 <= 0) return 0u;
+	uint64_t wl = (uint64_t)(uint32_t)wavelength_q16;
+	uint64_t st = (uint64_t)(uint32_t)step_q16;
+	uint64_t nyq_lo = st << 1;
+	if (wl <= nyq_lo) return 0u;
+	uint64_t nyq_hi = st << 2;
+	if (wl >= nyq_hi) return 65536u;
+	uint32_t t_q16 = (uint32_t)(((wl - nyq_lo) << 16) / (nyq_hi - nyq_lo));
+	return noise_wfade5(t_q16, 16);
+}
+
+/* Continuous C2 Nyquist low-pass weight L(2^shift, Delta) in Q16 [0..65536] for dyadic octave `shift`. */
+static inline uint32_t
+chaff_octave_weight_q16(uint8_t shift, int32_t step_q16)
+{
+	if (step_q16 <= 0) return 65536u;
+	if (shift >= 31u) return 65536u;
+	uint64_t wl = 1ULL << (shift + 16u);
+	uint64_t st = (uint64_t)(uint32_t)step_q16;
+	uint64_t nyq_lo = st << 1;
+	if (wl <= nyq_lo) return 0u;
+	uint64_t nyq_hi = st << 2;
+	if (wl >= nyq_hi) return 65536u;
+	uint32_t t_q16 = (uint32_t)(((wl - nyq_lo) << 16) / (nyq_hi - nyq_lo));
+	return noise_wfade5(t_q16, 16);
+}
+
+/* Complementary scale-space band-pass weight B(2^shift; fine_step, coarse_step) in Q16 [0..65536]:
+ * B(lambda; Delta_fine, Delta_coarse) = L(lambda, Delta_fine) * (1 - L(lambda, Delta_coarse)).
+ * Satisfies exact partition of unity: L(lambda, Delta_coarse) + B(lambda; 0, Delta_coarse) == 1. */
+static inline uint32_t
+chaff_band_weight_q16(uint8_t shift, int32_t fine_step_q16, int32_t coarse_step_q16)
+{
+	uint32_t w_fine = chaff_octave_weight_q16(shift, fine_step_q16);
+	if (w_fine == 0u) return 0u;
+	uint32_t w_coarse = chaff_octave_weight_q16(shift, coarse_step_q16);
+	if (w_coarse >= 65536u) return 0u;
+	return (uint32_t)(((uint64_t)w_fine * (65536u - w_coarse)) >> 16);
+}
+
 /* Band-limited multi-layer region generator.
  * Automatically filters out octaves whose wavelength shift is below the maximum of:
  *   1. The explicit `min_shift` threshold supplied by the caller, and
@@ -1245,6 +1294,7 @@ typedef struct {
 	unsigned fade_flags;       /* Fade flags (0 = NOISE_FADE5) */
 	uint8_t  out_shift;        /* Output fractional shift (e.g. CHAFF_DEFAULT_OUT_SHIFT = 4 for Q12.4) */
 	uint8_t  period_shift;     /* Optional periodic domain shift (0 = aperiodic) */
+	int32_t  step_q16;         /* Optional sampling stride in Q16.16 for continuous Nyquist low-pass (0 = point sample) */
 } chaff_fbm_opts_t;
 
 /* Struct-driven 2D rotated fractal octave accumulator */
@@ -1265,6 +1315,9 @@ chaff_fbm_rotated_2d(const chaff_fbm_opts_t *opts, int32_t x, int32_t y)
 	int32_t acc = 0;
 
 	for (int8_t s = (int8_t)opts->max_shift; s >= (int8_t)opts->min_shift; s--) {
+		uint32_t w_q16 = chaff_octave_weight_q16((uint8_t)s, opts->step_q16);
+		if (w_q16 == 0u)
+			break;
 		int16_t amp = chaff_octave_amplitude_ex((uint8_t)s, opts->amp_min_shift, base_amp);
 		uint32_t oct_seed = opts->seed ^ (uint32_t)((uint8_t)s * prime + opts->seed_salt);
 		int16_t p[2] = { (int16_t)cur_y, (int16_t)cur_x };
@@ -1273,7 +1326,11 @@ chaff_fbm_rotated_2d(const chaff_fbm_opts_t *opts, int32_t x, int32_t y)
 		if ((uint8_t)s >= opts->ridged_min_shift) {
 			val = ridge_fold - abs(val);
 		}
-		acc += (int32_t)((((int64_t)val * amp) << opts->out_shift) / mid);
+		int64_t term = (((int64_t)val * amp) << opts->out_shift) / mid;
+		if (w_q16 < 65536u) {
+			term = (term * (int64_t)w_q16) >> 16;
+		}
+		acc += (int32_t)term;
 		chaff_rot2d_i32_q15(&cur_x, &cur_y, cos_q15, sin_q15);
 	}
 	return acc;
@@ -1304,7 +1361,38 @@ chaff_fbm_rotated_2d_ex(int32_t x, int32_t y,
 		.sin_q15 = sin_q15,
 		.vshift = vshift,
 		.fade_flags = fade_flags,
-		.out_shift = out_shift
+		.out_shift = out_shift,
+		.step_q16 = 0
+	};
+	return chaff_fbm_rotated_2d(&opts, x, y);
+}
+
+/* Scale-filtered 2D rotated fractal octave accumulator in Q12.4 fixed-point with continuous Nyquist step_q16. */
+static inline int32_t
+chaff_fbm_rotated_2d_step_q12_4(int32_t x, int32_t y,
+                                int32_t step_q16,
+                                uint8_t min_shift, uint8_t max_shift,
+                                uint8_t ridged_min_shift,
+                                uint8_t amp_min_shift, int16_t base_amp,
+                                uint32_t seed, uint32_t seed_salt,
+                                int32_t cos_q15, int32_t sin_q15)
+{
+	if (min_shift > max_shift || base_amp <= 0) return 0;
+	chaff_fbm_opts_t opts = {
+		.min_shift = min_shift,
+		.max_shift = max_shift,
+		.ridged_min_shift = ridged_min_shift,
+		.amp_min_shift = amp_min_shift,
+		.base_amp = base_amp,
+		.seed = seed,
+		.seed_salt = seed_salt,
+		.seed_prime = CHAFF_SEED_PRIME,
+		.cos_q15 = cos_q15,
+		.sin_q15 = sin_q15,
+		.vshift = CHAFF_DEFAULT_VSHIFT,
+		.fade_flags = NOISE_FADE5,
+		.out_shift = CHAFF_DEFAULT_OUT_SHIFT,
+		.step_q16 = step_q16
 	};
 	return chaff_fbm_rotated_2d(&opts, x, y);
 }

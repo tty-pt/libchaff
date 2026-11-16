@@ -210,6 +210,46 @@ int main(void)
 		printf("PASS: chaff_glsl_ref_eval_uniforms and custom vshift 3D/4D _ex samplers verified\n");
 	}
 
+	/* 10. Analytical 2D value-gradient noise (chaff_value_grad_noise2d) and scale-space band weights */
+	{
+		const char *src = chaff_glsl_fragment_shader_source();
+		assert(strstr(src, "chaff_value_grad_noise2d") != NULL);
+		assert(strstr(src, "chaff_lowpass_weight") != NULL);
+		assert(strstr(src, "chaff_band_weight") != NULL);
+
+		uint32_t seed = 0x9E3779B9u;
+		float eps = 0.002f;
+		for (float y = -7.3f; y <= 12.7f; y += 3.1f) {
+			for (float x = -5.4f; x <= 14.6f; x += 2.9f) {
+				float val = 0.0f, gx = 0.0f, gy = 0.0f;
+				chaff_glsl_ref_value_grad_noise2d(x, y, seed, &val, &gx, &gy);
+				assert(val >= 0.0f && val <= 1.0f);
+
+				float v_xp = 0.0f, v_xm = 0.0f, v_yp = 0.0f, v_ym = 0.0f;
+				chaff_glsl_ref_value_grad_noise2d(x + eps, y, seed, &v_xp, NULL, NULL);
+				chaff_glsl_ref_value_grad_noise2d(x - eps, y, seed, &v_xm, NULL, NULL);
+				chaff_glsl_ref_value_grad_noise2d(x, y + eps, seed, &v_yp, NULL, NULL);
+				chaff_glsl_ref_value_grad_noise2d(x, y - eps, seed, &v_ym, NULL, NULL);
+
+				float num_gx = (v_xp - v_xm) / (2.0f * eps);
+				float num_gy = (v_yp - v_ym) / (2.0f * eps);
+				assert(fabsf(gx - num_gx) < 0.01f);
+				assert(fabsf(gy - num_gy) < 0.01f);
+			}
+		}
+
+		/* Verify complementary band-pass partition of unity: L(wl, coarse) + B(wl, 0, coarse) == 1.0 */
+		for (float coarse_step = 0.5f; coarse_step <= 64.0f; coarse_step *= 1.7f) {
+			for (int s = 0; s <= 10; s++) {
+				float wl = (float)(1 << s);
+				float w_low = chaff_glsl_ref_lowpass_weight(wl, coarse_step);
+				float w_band = chaff_glsl_ref_band_weight(wl, 0.0f, coarse_step);
+				assert(fabsf((w_low + w_band) - 1.0f) < 1e-6f);
+			}
+		}
+		printf("PASS: chaff_value_grad_noise2d analytical derivatives and chaff_band_weight verified\n");
+	}
+
 	printf("=== ALL GLSL GPU SHADER TESTS PASSED ===\n");
 	return 0;
 }

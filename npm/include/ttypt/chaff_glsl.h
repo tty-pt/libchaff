@@ -154,11 +154,43 @@
 	"vec2 chaff_curl_2d(vec2 p, uint seed) {\n" \
 	"    vec3 n = chaff_grad_noise2d(p, seed);\n" \
 	"    return vec2(-n.z, n.y);\n" \
+	"}\n" \
+	"vec3 chaff_value_grad_noise2d(vec2 p, uint seed) {\n" \
+	"    vec2 ip = floor(p);\n" \
+	"    vec2 fp = p - ip;\n" \
+	"    vec2 u = fp * fp * fp * (fp * (fp * 6.0 - 15.0) + 10.0);\n" \
+	"    vec2 du = 30.0 * fp * fp * (fp * (fp - 2.0) + 1.0);\n" \
+	"    ivec2 c = ivec2(ip);\n" \
+	"    float v00 = float(chaff_hash2(c, seed) >> 8u) * (1.0 / 16777215.0);\n" \
+	"    float v10 = float(chaff_hash2(c + ivec2(1, 0), seed) >> 8u) * (1.0 / 16777215.0);\n" \
+	"    float v01 = float(chaff_hash2(c + ivec2(0, 1), seed) >> 8u) * (1.0 / 16777215.0);\n" \
+	"    float v11 = float(chaff_hash2(c + ivec2(1, 1), seed) >> 8u) * (1.0 / 16777215.0);\n" \
+	"    float k0 = v10 - v00;\n" \
+	"    float k1 = v01 - v00;\n" \
+	"    float k2 = v11 - v01 - k0;\n" \
+	"    float val = v00 + k0 * u.x + k1 * u.y + k2 * u.x * u.y;\n" \
+	"    vec2 grad = du * vec2(k0 + k2 * u.y, k1 + k2 * u.x);\n" \
+	"    return vec3(val, grad.x, grad.y);\n" \
+	"}\n"
+
+/* Continuous scale-space C2 Nyquist low-pass and complementary band-pass weights */
+#define CHAFF_GLSL_BAND_FN \
+	"float chaff_lowpass_weight(float wavelength, float step_wu) {\n" \
+	"    if (step_wu <= 0.0) return 1.0;\n" \
+	"    float t = clamp((wavelength - 2.0 * step_wu) / (2.0 * step_wu), 0.0, 1.0);\n" \
+	"    return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);\n" \
+	"}\n" \
+	"float chaff_band_weight(float wavelength, float fine_step_wu, float coarse_step_wu) {\n" \
+	"    float w_fine = chaff_lowpass_weight(wavelength, fine_step_wu);\n" \
+	"    if (w_fine <= 0.0) return 0.0;\n" \
+	"    float w_coarse = chaff_lowpass_weight(wavelength, coarse_step_wu);\n" \
+	"    return w_fine * (1.0 - w_coarse);\n" \
 	"}\n"
 
 /* Continuous cubic Hermite interpolation matching noise_wcorners and noise_wstep.
  * Evaluates corner vertices at cell = floor(world_pos / 2^shift) * 2^shift. */
 #define CHAFF_GLSL_EVAL_FN \
+	CHAFF_GLSL_BAND_FN \
 	"float chaff_sample_octave(vec2 world_pos, uint shift, uint vshift, uint seed) {\n" \
 	"    float cell_size = float(1u << shift);\n" \
 	"    vec2 p = world_pos / cell_size;\n" \
@@ -832,6 +864,49 @@ static inline void chaff_glsl_ref_grad_noise2d_ex(float px, float py, uint32_t s
 static inline void chaff_glsl_ref_grad_noise2d(float px, float py, uint32_t seed,
                                                float *out_val, float *out_gx, float *out_gy) {
 	chaff_glsl_ref_grad_noise2d_ex(px, py, seed, CHAFF_GLSL_GRAD2D_NORM, out_val, out_gx, out_gy);
+}
+
+static inline void chaff_glsl_ref_value_grad_noise2d(float px, float py, uint32_t seed,
+                                                     float *out_val, float *out_gx, float *out_gy) {
+	float ipx = floorf(px);
+	float ipy = floorf(py);
+	float fpx = px - ipx;
+	float fpy = py - ipy;
+	float ux = fpx * fpx * fpx * (fpx * (fpx * 6.0f - 15.0f) + 10.0f);
+	float uy = fpy * fpy * fpy * (fpy * (fpy * 6.0f - 15.0f) + 10.0f);
+	float dux = 30.0f * fpx * fpx * (fpx * (fpx - 2.0f) + 1.0f);
+	float duy = 30.0f * fpy * fpy * (fpy * (fpy - 2.0f) + 1.0f);
+	int16_t cx = (int16_t)ipx;
+	int16_t cy = (int16_t)ipy;
+
+	const float inv_norm = 1.0f / 16777215.0f;
+	float v00 = (float)(chaff_glsl_ref_hash2(cy,              cx,              seed) >> 8u) * inv_norm;
+	float v10 = (float)(chaff_glsl_ref_hash2(cy,              (int16_t)(cx+1), seed) >> 8u) * inv_norm;
+	float v01 = (float)(chaff_glsl_ref_hash2((int16_t)(cy+1), cx,              seed) >> 8u) * inv_norm;
+	float v11 = (float)(chaff_glsl_ref_hash2((int16_t)(cy+1), (int16_t)(cx+1), seed) >> 8u) * inv_norm;
+
+	float k0 = v10 - v00;
+	float k1 = v01 - v00;
+	float k2 = v11 - v01 - k0;
+
+	if (out_val) *out_val = v00 + k0 * ux + k1 * uy + k2 * ux * uy;
+	if (out_gx)  *out_gx  = dux * (k0 + k2 * uy);
+	if (out_gy)  *out_gy  = duy * (k1 + k2 * ux);
+}
+
+static inline float chaff_glsl_ref_lowpass_weight(float wavelength, float step_wu) {
+	if (step_wu <= 0.0f) return 1.0f;
+	float t = (wavelength - 2.0f * step_wu) / (2.0f * step_wu);
+	if (t <= 0.0f) return 0.0f;
+	if (t >= 1.0f) return 1.0f;
+	return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
+}
+
+static inline float chaff_glsl_ref_band_weight(float wavelength, float fine_step_wu, float coarse_step_wu) {
+	float w_fine = chaff_glsl_ref_lowpass_weight(wavelength, fine_step_wu);
+	if (w_fine <= 0.0f) return 0.0f;
+	float w_coarse = chaff_glsl_ref_lowpass_weight(wavelength, coarse_step_wu);
+	return w_fine * (1.0f - w_coarse);
 }
 
 static inline void chaff_glsl_ref_grad4(int32_t cx, int32_t cy, int32_t cz, int32_t cw,
