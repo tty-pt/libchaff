@@ -35,7 +35,7 @@
     "webassembly",
     "n-dimensional"
   ],
-  "author": "tty-pt",
+  "author": "Paulo Quirino <quirinpa@gmail.com>",
   "license": "BSD-2-Clause",
   "repository": {
     "type": "git",
