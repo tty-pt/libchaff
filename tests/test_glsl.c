@@ -4,7 +4,7 @@
 #include <string.h>
 #include <assert.h>
 #include <math.h>
-#include <xxhash.h>
+#include <ttypt/noise.h>
 #include <ttypt/chaff_glsl.h>
 
 int main(void)

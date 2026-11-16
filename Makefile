@@ -1,104 +1,81 @@
-# libchaff Makefile
-PREFIX ?= /usr/local
-DESTDIR ?=
+all := libchaff
+SONAME-libchaff := libnoise
+LDLIBS-libchaff :=
 
-CC ?= gcc
-CFLAGS ?= -Wall -Wextra -Werror -O2 -Iinclude
-LDLIBS ?= -lxxhash
+WASM_SRCS := npm/wasm/chaff_wasm.c
 
-WASM_CC ?= clang
-WASM_CFLAGS ?= --target=wasm32-wasi -ffreestanding -flto -O3 -D__wasm__ -fvisibility=hidden -I./include -I../libstele/include -I../mk/include -I/usr/include
-WASM_LDFLAGS ?= -mexec-model=reactor -Wl,--gc-sections -Wl,--no-entry -Wl,--allow-undefined \
-	-Wl,--import-memory -Wl,-z,stack-size=32768 -Wl,--global-base=1638400 \
-	-Wl,--wrap=malloc -Wl,--wrap=free -Wl,--wrap=calloc -Wl,--wrap=realloc \
-	-Wl,--export=noise_wasm_point_1d -Wl,--export=noise_wasm_point_2d -Wl,--export=noise_wasm_point_3d -Wl,--export=noise_wasm_point_4d -Wl,--export=noise_wasm_point_n -Wl,--export=noise_wasm_octaves \
-	-Wl,--export=chaff_wasm_point_1d -Wl,--export=chaff_wasm_point_2d -Wl,--export=chaff_wasm_point_3d -Wl,--export=chaff_wasm_point_4d \
-	-Wl,--export=chaff_wasm_wpoint_periodic_2d -Wl,--export=chaff_wasm_fbm_rotated_2d_q12_4 -Wl,--export=chaff_wasm_sample_grad_2d
+include ../mk/include.mk
+LDLIBS-alpine :=
 
-SO_CFLAGS ?= -mgeneral-regs-only
+CFLAGS := -I./include -O2 -Wno-overlength-strings ${CFLAGS} $(EXTRA_CFLAGS)
 
-TEST_BINS := bin/test_noise bin/test_chaff bin/test_symbols bin/test_glsl bin/test_chaff_multiview
-BENCH_BINS := bin/bench_noise
-
-all: sync-npm-headers $(TEST_BINS) $(BENCH_BINS) lib/libchaff.so wasm
+TEST_BINS := bin/test_noise${EXE} bin/test_chaff${EXE} bin/test_symbols${EXE} bin/test_glsl${EXE} bin/test_chaff_multiview${EXE}
+BENCH_BINS := bin/bench_noise${EXE}
 
 sync-npm-headers:
 	@mkdir -p npm/include/ttypt
-	@cp include/ttypt/noise.h include/ttypt/chaff.h include/ttypt/chaff_glsl.h npm/include/ttypt/
+	@cp -f include/ttypt/noise.h include/ttypt/chaff.h include/ttypt/chaff_glsl.h npm/include/ttypt/
 
-test: $(TEST_BINS)
-	./bin/test_noise
-	./bin/test_chaff
-	./bin/test_symbols
-	./bin/test_glsl
-	./bin/test_chaff_multiview
+all: sync-npm-headers
+
+wasm: sync-npm-headers ${wasmtarget}
+	@cp -f npm/dist/chaff.wasm npm/dist/noise.wasm
+
+test: all $(TEST_BINS)
+	./bin/test_noise${EXE}
+	./bin/test_chaff${EXE}
+	./bin/test_symbols${EXE}
+	./bin/test_glsl${EXE}
+	./bin/test_chaff_multiview${EXE}
 
 bench: $(BENCH_BINS)
-	./bin/bench_noise
+	./bin/bench_noise${EXE}
 
-bin/bench_noise: tests/bench_noise.c include/ttypt/noise.h include/ttypt/chaff.h include/ttypt/chaff_glsl.h
+bin/bench_noise${EXE}: tests/bench_noise.c include/ttypt/noise.h include/ttypt/chaff.h include/ttypt/chaff_glsl.h
 	@mkdir -p bin
-	$(CC) $(CFLAGS) -o $@ tests/bench_noise.c $(LDLIBS) -lm
+	${cc} ${CFLAGS} -o $@ tests/bench_noise.c -lm
 
-bin/test_noise: tests/test_noise.c include/ttypt/noise.h include/ttypt/chaff.h include/ttypt/chaff_glsl.h
+bin/test_noise${EXE}: tests/test_noise.c include/ttypt/noise.h include/ttypt/chaff.h include/ttypt/chaff_glsl.h
 	@mkdir -p bin
-	$(CC) $(CFLAGS) -o $@ tests/test_noise.c $(LDLIBS) -lm
+	${cc} ${CFLAGS} -o $@ tests/test_noise.c -lm
 
-bin/test_chaff: tests/test_chaff.c include/ttypt/noise.h include/ttypt/chaff.h include/ttypt/chaff_glsl.h
+bin/test_chaff${EXE}: tests/test_chaff.c include/ttypt/noise.h include/ttypt/chaff.h include/ttypt/chaff_glsl.h
 	@mkdir -p bin
-	$(CC) $(CFLAGS) -o $@ tests/test_chaff.c $(LDLIBS) -lm
+	${cc} ${CFLAGS} -o $@ tests/test_chaff.c -lm
 
-bin/test_symbols: tests/test_symbols.c src/libchaff.c include/ttypt/noise.h include/ttypt/chaff.h
+bin/test_symbols${EXE}: tests/test_symbols.c src/libchaff.c include/ttypt/noise.h include/ttypt/chaff.h
 	@mkdir -p bin
-	$(CC) $(CFLAGS) -o $@ tests/test_symbols.c src/libchaff.c $(LDLIBS) -lm
+	${cc} ${CFLAGS} -o $@ tests/test_symbols.c src/libchaff.c -lm
 
-bin/test_glsl: tests/test_glsl.c include/ttypt/chaff_glsl.h
+bin/test_glsl${EXE}: tests/test_glsl.c include/ttypt/chaff_glsl.h
 	@mkdir -p bin
-	$(CC) $(CFLAGS) -o $@ tests/test_glsl.c $(LDLIBS) -lm
+	${cc} ${CFLAGS} -o $@ tests/test_glsl.c -lm
 
-bin/test_chaff_multiview: tests/test_chaff_multiview.c include/ttypt/noise.h include/ttypt/chaff.h include/ttypt/chaff_glsl.h
+bin/test_chaff_multiview${EXE}: tests/test_chaff_multiview.c include/ttypt/noise.h include/ttypt/chaff.h include/ttypt/chaff_glsl.h
 	@mkdir -p bin
-	$(CC) $(CFLAGS) -o $@ tests/test_chaff_multiview.c $(LDLIBS) -lm
+	${cc} ${CFLAGS} -o $@ tests/test_chaff_multiview.c -lm
 
-lib/libchaff.so: src/libchaff.c include/ttypt/noise.h include/ttypt/chaff.h
-	@mkdir -p lib
-	$(CC) $(CFLAGS) $(SO_CFLAGS) -fPIC -shared -o $@ src/libchaff.c $(LDLIBS)
-	@ln -sf libchaff.so lib/libnoise.so
+${DESTDIR}${PREFIX}/lib/pkgconfig/chaff.pc: chaff.pc
+	install -d ${DESTDIR}${PREFIX}/lib/pkgconfig
+	install -m 644 chaff.pc $@
 
-wasm: sync-npm-headers npm/dist/chaff.wasm
+install: ${DESTDIR}${PREFIX}/lib/pkgconfig/chaff.pc
 
-npm/dist/chaff.wasm: npm/wasm/chaff_wasm.c include/ttypt/noise.h include/ttypt/chaff.h ../mk/wasm_alloc_shim.c
-	@mkdir -p npm/dist
-	$(WASM_CC) $(WASM_CFLAGS) $(WASM_LDFLAGS) npm/wasm/chaff_wasm.c ../mk/wasm_alloc_shim.c -o $@
-	@ln -sf chaff.wasm npm/dist/noise.wasm
+NPM ?= npm
 
 npm-build: wasm
-	@mkdir -p npm/build/Release
-	@gcc -O3 -fPIC -shared -I/usr/include/node -I./include -I/usr/include npm/native/chaff_napi.c -L/usr/lib -lxxhash -o npm/build/Release/chaff_node.node 2>/dev/null || true
+	@if command -v $(NPM) >/dev/null 2>&1; then \
+		(cd npm && $(NPM) run build); \
+	fi
 
 npm-test: npm-build
-	@node --test npm/tests/chaff.test.mjs
+	@if command -v $(NPM) >/dev/null 2>&1; then \
+		(cd npm && $(NPM) test); \
+	fi
 
-clean:
-	rm -rf bin lib npm/build npm/dist/*.wasm
+clean-extra::
+	rm -rf bin npm/build npm/dist/*.wasm
 
-install: lib/libchaff.so chaff.pc
-	install -d $(DESTDIR)$(PREFIX)/include/ttypt
-	install -m 644 include/ttypt/noise.h $(DESTDIR)$(PREFIX)/include/ttypt/
-	install -m 644 include/ttypt/chaff.h $(DESTDIR)$(PREFIX)/include/ttypt/
-	install -m 644 include/ttypt/chaff_glsl.h $(DESTDIR)$(PREFIX)/include/ttypt/
-	install -d $(DESTDIR)$(PREFIX)/lib
-	install -m 755 lib/libchaff.so $(DESTDIR)$(PREFIX)/lib/
-	ln -sf libchaff.so $(DESTDIR)$(PREFIX)/lib/libnoise.so
-	install -d $(DESTDIR)$(PREFIX)/lib/pkgconfig
-	install -m 644 chaff.pc $(DESTDIR)$(PREFIX)/lib/pkgconfig/
+objects-set.mk: Makefile
 
-uninstall:
-	rm -f $(DESTDIR)$(PREFIX)/include/ttypt/noise.h
-	rm -f $(DESTDIR)$(PREFIX)/include/ttypt/chaff.h
-	rm -f $(DESTDIR)$(PREFIX)/include/ttypt/chaff_glsl.h
-	rm -f $(DESTDIR)$(PREFIX)/lib/libchaff.so
-	rm -f $(DESTDIR)$(PREFIX)/lib/libnoise.so
-	rm -f $(DESTDIR)$(PREFIX)/lib/pkgconfig/chaff.pc
-
-.PHONY: all sync-npm-headers test wasm npm-build npm-test install uninstall clean
+.PHONY: all sync-npm-headers test bench wasm npm-build npm-test install

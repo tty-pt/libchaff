@@ -13,7 +13,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build:native": "mkdir -p build/Release && gcc -O3 -fPIC -shared -I/usr/include/node -I../include native/chaff_napi.c -L/usr/lib -lxxhash -o build/Release/chaff_node.node 2>/dev/null || true",
+    "build:native": "mkdir -p build/Release && gcc -O3 -fPIC -shared -I/usr/include/node -I../include native/chaff_napi.c -L../lib -Wl,-rpath,../lib -lchaff -o build/Release/chaff_node.node 2>/dev/null || true",
     "build:wasm": "make -C .. wasm",
     "build": "npm run build:native && npm run build:wasm",
     "test": "node --test tests/chaff.test.mjs"
@@ -36,5 +36,14 @@
     "n-dimensional"
   ],
   "author": "tty-pt",
-  "license": "BSD-2-Clause"
+  "license": "BSD-2-Clause",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tty-pt/libchaff.git",
+    "directory": "npm"
+  },
+  "homepage": "https://github.com/tty-pt/libchaff/tree/main/npm#readme",
+  "bugs": {
+    "url": "https://github.com/tty-pt/libchaff/issues"
+  }
 }
