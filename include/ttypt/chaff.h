@@ -1223,10 +1223,34 @@ chaff_wpoint_periodic_2d_ex(int32_t x, int32_t y, uint8_t shift, uint8_t period_
 	int16_t p01[2] = { (int16_t)ky1, (int16_t)kx0 };
 	int16_t p11[2] = { (int16_t)ky1, (int16_t)kx1 };
 
-	uint32_t v00 = noise_r(p00, seed, vshift, 2);
-	uint32_t v10 = noise_r(p10, seed, vshift, 2);
-	uint32_t v01 = noise_r(p01, seed, vshift, 2);
-	uint32_t v11 = noise_r(p11, seed, vshift, 2);
+	typedef struct {
+		uint16_t kx0, ky0, kx1, ky1;
+		uint32_t seed;
+		uint8_t vshift, valid;
+		uint32_t v00, v10, v01, v11;
+	} chaff_per_cache_t;
+	static chaff_per_cache_t s_per_cache[32];
+	chaff_per_cache_t *pc = &s_per_cache[(shift ^ (seed >> 8)) & 31u];
+	uint32_t v00, v10, v01, v11;
+	if (pc->valid && pc->kx0 == kx0 && pc->ky0 == ky0 &&
+	    pc->kx1 == kx1 && pc->ky1 == ky1 &&
+	    pc->seed == seed && pc->vshift == vshift) {
+		v00 = pc->v00;
+		v10 = pc->v10;
+		v01 = pc->v01;
+		v11 = pc->v11;
+	} else {
+		v00 = noise_r(p00, seed, vshift, 2);
+		v10 = noise_r(p10, seed, vshift, 2);
+		v01 = noise_r(p01, seed, vshift, 2);
+		v11 = noise_r(p11, seed, vshift, 2);
+		pc->kx0 = kx0; pc->ky0 = ky0;
+		pc->kx1 = kx1; pc->ky1 = ky1;
+		pc->seed = seed; pc->vshift = vshift;
+		pc->v00 = v00; pc->v10 = v10;
+		pc->v01 = v01; pc->v11 = v11;
+		pc->valid = 1;
+	}
 
 	uint32_t b0 = noise_wstep(v00, v10, fx, shift);
 	uint32_t b1 = noise_wstep(v01, v11, fx, shift);
@@ -1302,6 +1326,7 @@ static inline int32_t
 chaff_fbm_rotated_2d(const chaff_fbm_opts_t *opts, int32_t x, int32_t y)
 {
 	if (!opts || opts->min_shift > opts->max_shift) return 0;
+	static noise_wcache_t s_fbm_wcache[64];
 	unsigned vs = (opts->vshift && opts->vshift < 16u) ? (unsigned)opts->vshift : CHAFF_DEFAULT_VSHIFT;
 	unsigned fade_fl = opts->fade_flags ? opts->fade_flags : NOISE_FADE5;
 	int16_t base_amp = (opts->base_amp != 0) ? opts->base_amp : CHAFF_DEFAULT_BASE_AMP;
@@ -1313,6 +1338,7 @@ chaff_fbm_rotated_2d(const chaff_fbm_opts_t *opts, int32_t x, int32_t y)
 	int32_t cur_x = x;
 	int32_t cur_y = y;
 	int32_t acc = 0;
+	uint32_t bank = ((opts->seed_salt ^ (opts->seed >> 12)) & 3u) << 4;
 
 	for (int8_t s = (int8_t)opts->max_shift; s >= (int8_t)opts->min_shift; s--) {
 		uint32_t w_q16 = chaff_octave_weight_q16((uint8_t)s, opts->step_q16);
@@ -1321,7 +1347,8 @@ chaff_fbm_rotated_2d(const chaff_fbm_opts_t *opts, int32_t x, int32_t y)
 		int16_t amp = chaff_octave_amplitude_ex((uint8_t)s, opts->amp_min_shift, base_amp);
 		uint32_t oct_seed = opts->seed ^ (uint32_t)((uint8_t)s * prime + opts->seed_salt);
 		int16_t p[2] = { (int16_t)cur_y, (int16_t)cur_x };
-		uint32_t raw = noise_wpoint_n_periodic(p, (uint8_t)s, vs, oct_seed, 2, fade_fl, opts->period_shift);
+		noise_wcache_t *wc = &s_fbm_wcache[(bank + ((uint32_t)s & 15u)) & 63u];
+		uint32_t raw = noise_wpoint_c_periodic(wc, p, (uint8_t)s, vs, oct_seed, 2, fade_fl, opts->period_shift);
 		int32_t val = (int32_t)(raw >> 16) - mid;
 		if ((uint8_t)s >= opts->ridged_min_shift) {
 			val = ridge_fold - abs(val);
