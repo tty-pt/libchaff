@@ -1,11 +1,12 @@
 # @tty-pt/chaff
 
-Universal Node.js and Browser WebAssembly bindings for `libnoise`, an N-dimensional procedural noise engine with Hermite smoothstep interpolation and hypercube matrix stepping.
+Universal Node.js and Browser WebAssembly bindings for `libchaff` (`<ttypt/chaff.h>`, `<ttypt/noise.h>`), an N-dimensional procedural noise engine with Hermite smoothstep interpolation, periodic domain wrapping, analytical gradients, and hypercube matrix stepping.
 
 ## Features
-- **Point Queries ($O(1)$)**: Zero-allocation continuous noise queries across 1D, 2D, 3D, and 4D.
-- **Matrix Stepping**: Bulk hypercube generation without per-point function call overhead.
-- **Dual Runtime**: Native C execution in Node.js via Node-API, and high-performance WebAssembly in the browser via `@tty-pt/stele`.
+- **Point & Analytical Gradient Queries ($O(1)$)**: Zero-allocation continuous noise and analytical gradient queries across 1D, 2D, 3D, and 4D (`chaff_sample_grad_2d/3d/4d`).
+- **Matrix & 3D/4D Slice Stepping**: Bulk hypercube (`noiseOctaves`), 3D slice (`chaff_fill_slice_3d`), and 4D spatiotemporal slice (`chaff_fill_slice_4d`) generation without per-point function call overhead.
+- **Periodic Tiling, Domain Skew & Rotated FBM**: Power-of-two toroidal wrapping (`period_shift`), anisotropic shearing (`skew[2]`), and domain-rotated 2D FBM (`chaff_fbm_rotated_2d`).
+- **Dual Runtime**: Native C execution in Node.js via Node-API, and high-performance shared-memory WebAssembly in the browser via `@tty-pt/stele`.
 
 ## Usage
 ```javascript
@@ -22,4 +23,4 @@ const grid = noiseOctaves(2, [0, 0], [{ x: 4, w: 1 }], 42, 4);
 ```
 
 ## License
-CC BY-NC-SA 4.0 — Author: Paulo Quirino <q@qnixsoft.com>
+BSD-2-Clause — Copyright (c) 2026, tty-pt. See `LICENSE`.

@@ -6,6 +6,7 @@
 #include <math.h>
 #include <ttypt/noise.h>
 #include <ttypt/chaff.h>
+#include <ttypt/chaff_glsl.h>
 
 int main(void)
 {
@@ -255,7 +256,7 @@ int main(void)
 		for (int16_t y = -50; y <= 50; y += 25) {
 			for (int16_t x = -50; x <= 50; x += 25) {
 				chaff_sample_2d_t s2 = chaff_sample_grad_2d(&field2d, x, y);
-				assert(s2.elevation != 0);
+				assert(s2.val != 0);
 
 				chaff_sample_3d_t s3 = chaff_sample_grad_3d(&field3d, x, y, 15);
 				assert(s3.val != 0);
@@ -400,11 +401,11 @@ int main(void)
 			for (int16_t x = -40; x <= 40; x += 20) {
 				chaff_sample_2d_t s1 = chaff_sample_rugged_2d(&rug_field, x, y);
 				chaff_sample_2d_t s2 = chaff_sample_rugged_2d(&rug_field, x, y);
-				assert(s1.elevation == s2.elevation);
+				assert(s1.val == s2.val);
 				assert(s1.grad_x == s2.grad_x);
 				assert(s1.grad_y == s2.grad_y);
 
-				if (s1.elevation != 0) non_zero_elev++;
+				if (s1.val != 0) non_zero_elev++;
 				if (s1.grad_x != 0 || s1.grad_y != 0) non_zero_grad++;
 			}
 		}
@@ -415,7 +416,7 @@ int main(void)
 		chaff_sample_2d_t prev = chaff_sample_rugged_2d(&rug_field, 0, 0);
 		for (int16_t step = 1; step <= 32; step++) {
 			chaff_sample_2d_t cur = chaff_sample_rugged_2d(&rug_field, step, (int16_t)(step * 2));
-			int32_t diff_elev = abs(cur.elevation - prev.elevation);
+			int32_t diff_elev = abs(cur.val - prev.val);
 			assert(diff_elev <= 45); /* Smooth, continuous elevation transitions */
 			prev = cur;
 		}
@@ -423,7 +424,7 @@ int main(void)
 		/* Golden-Ratio decorrelation: compare rugged sampling with unrotated sampling */
 		chaff_sample_2d_t s_rug = chaff_sample_rugged_2d(&rug_field, 50, 50);
 		chaff_sample_2d_t s_unrot = chaff_sample_grad_2d(&rug_field, 50, 50);
-		assert(s_rug.elevation != s_unrot.elevation || s_rug.grad_x != s_unrot.grad_x);
+		assert(s_rug.val != s_unrot.val || s_rug.grad_x != s_unrot.grad_x);
 
 		printf("PASS: chaff_sample_rugged_2d verified on valid multi-layer field (determinism, continuity, and decorrelation)\n");
 	}
@@ -493,12 +494,12 @@ int main(void)
 		chaff_fill(NULL, 0, 1, org, st, n, dummy, 4, CHAFF_MODE_SET);
 
 		/* chaff_fill with out == NULL */
-		chaff_layer_t lay = { 4, 8, 10, 0, { 0, 0 }, 256 };
-		chaff_field_t field = { 1, 2, 0, 1, &lay };
+		chaff_layer_t lay = { .shift = 4, .vshift = 8, .amp = 10, .seed_mode = 0, .skew = { 0, 0 }, .contrast = 256 };
+		chaff_field_t field = { .seed = 1, .dim = 2, .flags = 0, .nlayers = 1, .layers = &lay };
 		chaff_fill(&field, 0, 1, org, st, n, NULL, 4, CHAFF_MODE_SET);
 
 		/* chaff_fill with invalid dimension */
-		chaff_field_t bad_dim = { 1, 5 /* >4 */, 0, 1, &lay };
+		chaff_field_t bad_dim = { .seed = 1, .dim = 5 /* >4 */, .flags = 0, .nlayers = 1, .layers = &lay };
 		chaff_fill(&bad_dim, 0, 1, org, st, n, dummy, 4, CHAFF_MODE_SET);
 
 		/* chaff_fill_lod with NULL */
@@ -506,7 +507,7 @@ int main(void)
 
 		/* chaff_sample_grad_2d with NULL */
 		chaff_sample_2d_t s2_null = chaff_sample_grad_2d(NULL, 0, 0);
-		assert(s2_null.elevation == 0 && s2_null.grad_x == 0 && s2_null.grad_y == 0);
+		assert(s2_null.val == 0 && s2_null.grad_x == 0 && s2_null.grad_y == 0);
 
 		/* chaff_sample_grad_3d with NULL */
 		chaff_sample_3d_t s3_null = chaff_sample_grad_3d(NULL, 0, 0, 0);
@@ -530,7 +531,7 @@ int main(void)
 
 		/* chaff_sample_rugged_2d with NULL */
 		chaff_sample_2d_t s_rug = chaff_sample_rugged_2d(NULL, 0, 0);
-		assert(s_rug.elevation == 0 && s_rug.grad_x == 0 && s_rug.grad_y == 0);
+		assert(s_rug.val == 0 && s_rug.grad_x == 0 && s_rug.grad_y == 0);
 
 		/* chaff_sample_flow_2d with NULL */
 		chaff_flow_2d_t f_null = chaff_sample_flow_2d(NULL, NULL, 0, 0, 0);
@@ -773,7 +774,7 @@ int main(void)
 		assert(sample_cnt == 49);
 		assert(sum_div / sample_cnt <= 24);
 
-		/* Test chaff_glsl_ref_grad_noise4d & chaff_glsl_ref_eval_flow_2d */
+		/* Test chaff_glsl_ref_grad_noise4d & chaff_glsl_ref_curl_2d */
 		chaff_glsl_ref_vec4_t gn4 = chaff_glsl_ref_grad_noise4d(2.35f, -1.72f, 0.64f, 4.18f, 0x434C4430u);
 		assert(gn4.val >= 0.0f && gn4.val <= 1.0f);
 		float eps = 0.002f;
@@ -783,14 +784,306 @@ int main(void)
 		/* gn4.grad_x is the un-interpolated-gradient fast analytical derivative */
 		assert(fabsf(gn4.grad_x - fd4_x) < 0.35f);
 
-		float wx_dir = 0.0f, wy_dir = 0.0f, gust = 0.0f, cp = 0.0f;
-		chaff_glsl_ref_eval_flow_2d(120.0f, -85.0f, 14.5f, &wx_dir, &wy_dir, &gust, &cp);
-		float dir_norm = sqrtf(wx_dir * wx_dir + wy_dir * wy_dir);
-		assert(fabsf(dir_norm - 1.0f) < 1e-3f);
-		assert(gust >= 0.25f && gust <= 1.35f);
-		assert(cp >= 0.0f && cp <= 1.0f);
+		float curl_vx = 0.0f, curl_vy = 0.0f;
+		chaff_glsl_ref_curl_2d(12.0f, -8.5f, 0x57494E44u, &curl_vx, &curl_vy);
+		float gn2_v = 0.0f, gn2_gx = 0.0f, gn2_gy = 0.0f;
+		chaff_glsl_ref_grad_noise2d(12.0f, -8.5f, 0x57494E44u, &gn2_v, &gn2_gx, &gn2_gy);
+		assert(fabsf(curl_vx - (-gn2_gy)) < 1e-6f);
+		assert(fabsf(curl_vy - gn2_gx) < 1e-6f);
 
-		printf("PASS: chaff_sample_flow_2d, chaff_band_range_for_step_q16, and GLSL grad_noise4d/flow_2d reference verified\n");
+		printf("PASS: chaff_sample_flow_2d, chaff_band_range_for_step_q16, and chaff_glsl_ref_curl_2d verified\n");
+	}
+
+	/* 18. Wide Slice Strip-Chunking (shift=9, cell_w=512 > 256), Grad 2D Contrast/Skew, Rugged Gradient Chain Rule & _ex Params */
+	{
+		/* Wide cell (2^9 = 512 > CHAFF_SLICE_STRIP_MAX = 256) in 3D and 4D slice steppers */
+		static const chaff_layer_t wide_lay = {
+			.shift = 9, .vshift = 8, .amp = 100, .seed_mode = CHAFF_SEED_SHARED, .contrast = 256
+		};
+		static const chaff_field_t wide_f3 = {
+			.seed = 0x99887766u, .dim = 3, .flags = CHAFF_FLAG_FADE, .nlayers = 1, .layers = &wide_lay
+		};
+		static const chaff_field_t wide_f4 = {
+			.seed = 0x99887766u, .dim = 4, .flags = CHAFF_FLAG_FADE, .nlayers = 1, .layers = &wide_lay
+		};
+
+		uint16_t wide_w = 520, wide_h = 2;
+		int32_t *w3_val = (int32_t *)calloc((size_t)wide_w * wide_h, sizeof(int32_t));
+		int16_t *w3_gx  = (int16_t *)calloc((size_t)wide_w * wide_h, sizeof(int16_t));
+		int16_t *w3_gy  = (int16_t *)calloc((size_t)wide_w * wide_h, sizeof(int16_t));
+		int32_t *w4_val = (int32_t *)calloc((size_t)wide_w * wide_h, sizeof(int32_t));
+		int16_t *w4_gx  = (int16_t *)calloc((size_t)wide_w * wide_h, sizeof(int16_t));
+		assert(w3_val && w3_gx && w3_gy && w4_val && w4_gx);
+
+		chaff_fill_slice_3d(&wide_f3, 12, 0, 0, wide_w, wide_h, w3_val, w3_gx, w3_gy);
+		chaff_fill_slice_4d(&wide_f4, 12, 7, 0, 0, wide_w, wide_h, w4_val, w4_gx, NULL, NULL, NULL);
+
+		for (uint16_t c = 0; c < wide_w; c += 65) {
+			chaff_sample_3d_t p3 = chaff_sample_grad_3d(&wide_f3, (int16_t)c, 1, 12);
+			assert(w3_val[wide_w + c] == p3.val);
+			assert(w3_gx[wide_w + c] == p3.grad_x);
+			assert(w3_gy[wide_w + c] == p3.grad_y);
+
+			chaff_sample_4d_t p4 = chaff_sample_grad_4d(&wide_f4, (int16_t)c, 1, 12, 7);
+			assert(w4_val[wide_w + c] == p4.val);
+			assert(w4_gx[wide_w + c] == p4.grad_x);
+		}
+		free(w3_val); free(w3_gx); free(w3_gy);
+		free(w4_val); free(w4_gx);
+
+		/* Verify chaff_sample_grad_2d respects contrast and skew */
+		static const chaff_layer_t lay_c1 = {
+			.shift = 5, .vshift = 8, .amp = 100, .seed_mode = CHAFF_SEED_SHARED, .skew = { 3, -5 }, .contrast = 256
+		};
+		static const chaff_layer_t lay_c2 = {
+			.shift = 5, .vshift = 8, .amp = 100, .seed_mode = CHAFF_SEED_SHARED, .skew = { 3, -5 }, .contrast = 512
+		};
+		static const chaff_field_t f_c1 = { .seed = 0x12345678u, .dim = 2, .flags = CHAFF_FLAG_FADE, .nlayers = 1, .layers = &lay_c1 };
+		static const chaff_field_t f_c2 = { .seed = 0x12345678u, .dim = 2, .flags = CHAFF_FLAG_FADE, .nlayers = 1, .layers = &lay_c2 };
+
+		chaff_sample_2d_t sc1 = chaff_sample_grad_2d(&f_c1, 17, 23);
+		chaff_sample_2d_t sc2 = chaff_sample_grad_2d(&f_c2, 17, 23);
+		assert(abs(sc2.val) >= abs(sc1.val));
+		assert(abs(sc2.grad_x) >= abs(sc1.grad_x));
+
+		/* Verify configurable GLSL reference _ex evaluators */
+		chaff_multi_warp_params_t mwp = CHAFF_MULTI_WARP_PARAMS_DEFAULT;
+		float mv = 0.0f, mgx = 0.0f, mgy = 0.0f;
+		chaff_glsl_ref_eval_multi_warped_ex(&mwp, 100.0f, 200.0f, 6.0f, 0xABCDEF01u, 1.0f, &mv, &mgx, &mgy);
+		assert(mv >= 0.0f && mv <= 1.0f);
+
+		/* Verify custom vshift (vshift = 7 -> mid = 256, amp_shift = 8) parity across chaff_fill, chaff_sample_grad_2d, 3d, 4d */
+		static const chaff_layer_t lay_vs7 = {
+			.shift = 4, .vshift = 7, .amp = 100, .seed_mode = CHAFF_SEED_SHARED, .contrast = 256
+		};
+		static const chaff_field_t f2_vs7 = { .seed = 0x55AA55AAu, .dim = 2, .flags = CHAFF_FLAG_FADE, .nlayers = 1, .layers = &lay_vs7 };
+		static const chaff_field_t f3_vs7 = { .seed = 0x55AA55AAu, .dim = 3, .flags = CHAFF_FLAG_FADE, .nlayers = 1, .layers = &lay_vs7 };
+		static const chaff_field_t f4_vs7 = { .seed = 0x55AA55AAu, .dim = 4, .flags = CHAFF_FLAG_FADE, .nlayers = 1, .layers = &lay_vs7 };
+
+		chaff_coord_t o2[2] = { { 16, 0 }, { 32, 0 } };
+		int32_t st2[2] = { 65536, 65536 };
+		uint16_t n2[2] = { 1, 1 };
+		int32_t fill2_val = 0;
+		chaff_fill(&f2_vs7, 0, 1, o2, st2, n2, &fill2_val, 1, CHAFF_MODE_SET);
+		chaff_sample_2d_t grad2_vs7 = chaff_sample_grad_2d(&f2_vs7, 32, 16);
+		assert(grad2_vs7.val == fill2_val);
+
+		int32_t slice3_val = 0;
+		chaff_fill_slice_3d(&f3_vs7, 5, 20, 10, 1, 1, &slice3_val, NULL, NULL);
+		chaff_sample_3d_t grad3_vs7 = chaff_sample_grad_3d(&f3_vs7, 20, 10, 5);
+		assert(grad3_vs7.val == slice3_val);
+
+		int32_t slice4_val = 0;
+		chaff_fill_slice_4d(&f4_vs7, 5, 3, 20, 10, 1, 1, &slice4_val, NULL, NULL, NULL, NULL);
+		chaff_sample_4d_t grad4_vs7 = chaff_sample_grad_4d(&f4_vs7, 20, 10, 5, 3);
+		assert(grad4_vs7.val == slice4_val);
+
+		printf("PASS: wide slice strip-chunking (shift=9, width=520), grad_2d contrast/skew, custom vshift=7 parity, and _ex evaluators verified\n");
+	}
+
+	/* 19. Struct-Driven Settings: chaff_fbm_opts_t, chaff_periodic_opts_t, chaff_field_t & chaff_layer_t */
+	{
+		/* chaff_fbm_rotated_2d(&opts, x, y) vs chaff_fbm_rotated_2d_q12_4 */
+		chaff_fbm_opts_t fbm_opts = {
+			.min_shift = 2,
+			.max_shift = 7,
+			.ridged_min_shift = 5,
+			.amp_min_shift = 2,
+			.base_amp = 4,
+			.seed = 0x11223344u,
+			.seed_salt = 0x5566u,
+			.cos_q15 = CHAFF_ROT_ATAN_COS_Q15,
+			.sin_q15 = CHAFF_ROT_ATAN_SIN_Q15,
+			.out_shift = CHAFF_DEFAULT_OUT_SHIFT
+		};
+		int32_t v_struct = chaff_fbm_rotated_2d(&fbm_opts, 140, -90);
+		int32_t v_legacy = chaff_fbm_rotated_2d_q12_4(140, -90, 2, 7, 5, 2, 4, 0x11223344u, 0x5566u,
+		                                              CHAFF_ROT_ATAN_COS_Q15, CHAFF_ROT_ATAN_SIN_Q15);
+		assert(v_struct == v_legacy);
+
+		/* Custom rotation and linear fade via chaff_fbm_opts_t */
+		fbm_opts.cos_q15 = CHAFF_ROT_GOLD_COS_Q15;
+		fbm_opts.sin_q15 = CHAFF_ROT_GOLD_SIN_Q15;
+		fbm_opts.fade_flags = CHAFF_FLAG_LINEAR;
+		fbm_opts.out_shift = 2;
+		int32_t v_custom = chaff_fbm_rotated_2d(&fbm_opts, 140, -90);
+		assert(v_custom != v_struct);
+		assert(chaff_fbm_rotated_2d(NULL, 140, -90) == 0);
+
+		/* chaff_sample_periodic_2d_opts(&popts, rx, ry) */
+		chaff_periodic_opts_t popts = {
+			.shift = 4,
+			.period_shift = 6,
+			.vshift = 8,
+			.seed = 0x99887766u,
+			.fade_flags = NOISE_FADE5
+		};
+		uint32_t p0 = chaff_sample_periodic_2d_opts(&popts, 10, 20);
+		uint32_t p_wrap = chaff_sample_periodic_2d_opts(&popts, 10 + (1 << 6), 20 - (1 << 6));
+		assert(p0 == p_wrap);
+
+		/* chaff_layer_t::period_shift periodic wrapping in chaff_sample_grad_2d and custom seed_salt / CHAFF_FLAG_FADE5 */
+		static const chaff_layer_t lay_per = {
+			.shift = 4, .vshift = 8, .amp = 100, .seed_mode = CHAFF_SEED_PER_LAYER,
+			.contrast = 256, .period_shift = 6, .seed_salt = 0xCAFEBABEu
+		};
+		static const chaff_field_t f_per = {
+			.seed = 0x1234u, .dim = 2, .flags = CHAFF_FLAG_FADE5, .nlayers = 1, .layers = &lay_per,
+			.rot_cos_q15 = CHAFF_ROT_ATAN_COS_Q15, .rot_sin_q15 = CHAFF_ROT_ATAN_SIN_Q15
+		};
+		chaff_sample_2d_t g_base = chaff_sample_grad_2d(&f_per, 19, 27);
+		chaff_sample_2d_t g_wrap = chaff_sample_grad_2d(&f_per, (int16_t)(19 + 64), (int16_t)(27 + 64));
+		assert(g_base.val == g_wrap.val);
+		assert(g_base.grad_x == g_wrap.grad_x && g_base.grad_y == g_wrap.grad_y);
+
+		/* Verify chaff_sample_rugged_2d uses field->rot_cos_q15 / rot_sin_q15 when non-zero */
+		chaff_sample_2d_t r_field_rot = chaff_sample_rugged_2d(&f_per, 19, 27);
+		chaff_sample_2d_t r_ex_rot = chaff_sample_rugged_2d_ex(&f_per, 19, 27,
+		                                                       CHAFF_ROT_ATAN_COS_Q15, CHAFF_ROT_ATAN_SIN_Q15);
+		assert(r_field_rot.val == r_ex_rot.val);
+
+		printf("PASS: struct-driven chaff_fbm_opts_t, chaff_periodic_opts_t, period_shift, seed_salt, and CHAFF_FLAG_FADE5 verified\n");
+	}
+
+	/* 20. 3D/4D Skew & Period-Shift Parity, chaff_fill Period-Shift, and Arbitrary vshift noise_point_n_ex */
+	{
+		/* 3D and 4D skew + period_shift parity between chaff_sample_grad_3d/4d and chaff_fill_slice_3d/4d */
+		static const chaff_layer_t lay_sp = {
+			.shift = 4, .vshift = 8, .amp = 100, .seed_mode = CHAFF_SEED_PER_LAYER,
+			.skew = { 3, -5 }, .contrast = 256, .period_shift = 6, .seed_salt = 0x1357u
+		};
+		static const chaff_field_t f3_sp = {
+			.seed = 0x2468u, .dim = 3, .flags = CHAFF_FLAG_FADE, .nlayers = 1, .layers = &lay_sp
+		};
+		static const chaff_field_t f4_sp = {
+			.seed = 0x2468u, .dim = 4, .flags = CHAFF_FLAG_FADE, .nlayers = 1, .layers = &lay_sp
+		};
+
+		/* Verify periodic wrapping on Z and W axes when skew == 0 */
+		static const chaff_layer_t lay_noskew_per = {
+			.shift = 4, .vshift = 8, .amp = 100, .seed_mode = CHAFF_SEED_SHARED,
+			.skew = { 0, 0 }, .contrast = 256, .period_shift = 6
+		};
+		static const chaff_field_t f3_per = {
+			.seed = 0x9999u, .dim = 3, .flags = CHAFF_FLAG_FADE, .nlayers = 1, .layers = &lay_noskew_per
+		};
+		static const chaff_field_t f4_per = {
+			.seed = 0x9999u, .dim = 4, .flags = CHAFF_FLAG_FADE, .nlayers = 1, .layers = &lay_noskew_per
+		};
+		chaff_sample_3d_t s3_p0 = chaff_sample_grad_3d(&f3_per, 11, 22, 33);
+		chaff_sample_3d_t s3_pw = chaff_sample_grad_3d(&f3_per, (int16_t)(11 + 64), (int16_t)(22 - 64), (int16_t)(33 + 64));
+		assert(s3_p0.val == s3_pw.val && s3_p0.grad_x == s3_pw.grad_x && s3_p0.grad_z == s3_pw.grad_z);
+
+		chaff_sample_4d_t s4_p0 = chaff_sample_grad_4d(&f4_per, 11, 22, 33, 44);
+		chaff_sample_4d_t s4_pw = chaff_sample_grad_4d(&f4_per, (int16_t)(11 + 64), (int16_t)(22 - 64), (int16_t)(33 + 64), (int16_t)(44 - 64));
+		assert(s4_p0.val == s4_pw.val && s4_p0.grad_w == s4_pw.grad_w);
+
+		/* Verify 3D/4D slice filler bit-exactness with skew and period_shift */
+		int32_t sl3_v[8 * 8], sl4_v[8 * 8];
+		int16_t sl3_gx[8 * 8], sl3_gy[8 * 8], sl4_gx[8 * 8], sl4_gw[8 * 8];
+		chaff_fill_slice_3d(&f3_sp, 19, -4, 7, 8, 8, sl3_v, sl3_gx, sl3_gy);
+		chaff_fill_slice_4d(&f4_sp, 19, -11, -4, 7, 8, 8, sl4_v, sl4_gx, NULL, NULL, sl4_gw);
+		for (int ry = 0; ry < 8; ry++) {
+			for (int rx = 0; rx < 8; rx++) {
+				chaff_sample_3d_t p3 = chaff_sample_grad_3d(&f3_sp, (int16_t)(-4 + rx), (int16_t)(7 + ry), 19);
+				chaff_sample_4d_t p4 = chaff_sample_grad_4d(&f4_sp, (int16_t)(-4 + rx), (int16_t)(7 + ry), 19, -11);
+				assert(sl3_v[ry * 8 + rx] == p3.val);
+				assert(sl3_gx[ry * 8 + rx] == p3.grad_x && sl3_gy[ry * 8 + rx] == p3.grad_y);
+				assert(sl4_v[ry * 8 + rx] == p4.val);
+				assert(sl4_gx[ry * 8 + rx] == p4.grad_x && sl4_gw[ry * 8 + rx] == p4.grad_w);
+			}
+		}
+
+		/* Verify chaff_fill periodic wrapping in 1D, 2D, 3D, 4D */
+		chaff_coord_t o3_a[3] = { { 10, 0 }, { 20, 0 }, { 30, 0 } };
+		chaff_coord_t o3_b[3] = { { 10 + 64, 0 }, { 20 - 64, 0 }, { 30 + 64, 0 } };
+		int32_t st3[3] = { 65536, 65536, 65536 };
+		uint16_t n3[3] = { 2, 4, 4 };
+		int32_t cf3_a[32], cf3_b[32];
+		chaff_fill(&f3_per, 0, 1, o3_a, st3, n3, cf3_a, 4, CHAFF_MODE_SET);
+		chaff_fill(&f3_per, 0, 1, o3_b, st3, n3, cf3_b, 4, CHAFF_MODE_SET);
+		for (int i = 0; i < 32; i++) {
+			assert(cf3_a[i] == cf3_b[i]);
+		}
+
+		/* Verify noise_point_n_ex / chaff_point_n_ex with arbitrary vshift (4 -> 12-bit [0..4095], 6 -> 10-bit [0..1023]) */
+		int16_t pt[3] = { 17, -23, 9 };
+		int v_def = chaff_point_n_ex(pt, 0x12345678u, 4, 3, 0);
+		assert(v_def == chaff_point_n(pt, 0x12345678u, 4, 3));
+		int v_10b = chaff_point_n_ex(pt, 0x12345678u, 4, 3, 6);
+		int v_12b = chaff_point_n_ex(pt, 0x12345678u, 4, 3, 4);
+		assert(v_10b >= 0 && v_10b <= 1023);
+		assert(v_12b >= 0 && v_12b <= 4095);
+		assert(v_12b > 255 || v_10b > 255);
+
+		printf("PASS: 3D/4D skew & period_shift parity, chaff_fill period_shift, and noise_point_n_ex verified\n");
+	}
+
+	/* 21. Continuous Scale-Space Band Decomposition (chaff_octave_weight_q16, chaff_band_weight_q16, chaff_fbm_rotated_2d_step_q12_4) */
+	{
+		/* Point sample (step_q16 <= 0) always returns full weight 65536 */
+		for (uint8_t s = 0; s <= 20; s++) {
+			assert(chaff_octave_weight_q16(s, 0) == 65536u);
+			assert(chaff_octave_weight_q16(s, -100) == 65536u);
+		}
+
+		/* For step = 4.0 wu (4 << 16):
+		 *   - shifts 0..3 (wavelength 1, 2, 4, 8 <= 2*4 = 8): weight == 0
+		 *   - shift 4 (wavelength 16 >= 4*4 = 16): weight == 65536 */
+		int32_t step_4wu = 4 << 16;
+		assert(chaff_octave_weight_q16(0, step_4wu) == 0u);
+		assert(chaff_octave_weight_q16(1, step_4wu) == 0u);
+		assert(chaff_octave_weight_q16(2, step_4wu) == 0u);
+		assert(chaff_octave_weight_q16(3, step_4wu) == 0u);
+		assert(chaff_octave_weight_q16(4, step_4wu) == 65536u);
+		assert(chaff_octave_weight_q16(5, step_4wu) == 65536u);
+
+		/* Midpoint of transition band: wavelength = 16 (shift 4), step = 16 / 3 = 5.3333 wu -> t = 0.5 -> weight = 32768 */
+		int32_t step_mid = (16 << 16) / 3;
+		uint32_t w_mid = chaff_octave_weight_q16(4, step_mid);
+		assert(w_mid > 32700u && w_mid < 32840u);
+
+		/* Monotonicity of chaff_wavelength_weight_q16 across transition band */
+		uint32_t prev_w = 0;
+		for (int32_t wl_q16 = (8 << 16); wl_q16 <= (16 << 16); wl_q16 += (1 << 14)) {
+			uint32_t cur_w = chaff_wavelength_weight_q16(wl_q16, step_4wu);
+			assert(cur_w >= prev_w);
+			prev_w = cur_w;
+		}
+		assert(prev_w == 65536u);
+
+		/* Exact partition of unity: L(lambda, Delta_coarse) + B(lambda; 0, Delta_coarse) == 65536 */
+		for (int32_t st = (1 << 15); st <= (64 << 16); st += (3 << 14)) {
+			for (uint8_t s = 0; s <= 12; s++) {
+				uint32_t w_low = chaff_octave_weight_q16(s, st);
+				uint32_t w_band = chaff_band_weight_q16(s, 0, st);
+				assert(w_low + w_band == 65536u);
+			}
+		}
+
+		/* Scale-filtered chaff_fbm_rotated_2d_step_q12_4:
+		 *   - step_q16 == 0 matches chaff_fbm_rotated_2d_q12_4 bit-for-bit
+		 *   - step_q16 >= (1 << max_shift) early-exits and returns 0 */
+		int32_t fbm_pt = chaff_fbm_rotated_2d_step_q12_4(240, -180, 0, 0, 9, 7, 2, 1, 0x12345678u, 0xBEEFu,
+		                                                 CHAFF_ROT_ATAN_COS_Q15, CHAFF_ROT_ATAN_SIN_Q15);
+		int32_t fbm_ref = chaff_fbm_rotated_2d_q12_4(240, -180, 0, 9, 7, 2, 1, 0x12345678u, 0xBEEFu,
+		                                             CHAFF_ROT_ATAN_COS_Q15, CHAFF_ROT_ATAN_SIN_Q15);
+		assert(fbm_pt == fbm_ref);
+
+		/* When step_q16 = 256 << 16, max_shift = 9 (wavelength 512 <= 2 * 256), returns 0 in O(1) */
+		int32_t fbm_coarse = chaff_fbm_rotated_2d_step_q12_4(240, -180, 256 << 16, 0, 9, 7, 2, 1, 0x12345678u, 0xBEEFu,
+		                                                     CHAFF_ROT_ATAN_COS_Q15, CHAFF_ROT_ATAN_SIN_Q15);
+		assert(fbm_coarse == 0);
+
+		/* When step_q16 = 8 << 16, octaves s=9..5 have full weight (32 >= 4*8=32), s=4..0 have weight 0,
+		 * so result matches chaff_fbm_rotated_2d_q12_4 with min_shift = 5 bit-for-bit! */
+		int32_t fbm_step8 = chaff_fbm_rotated_2d_step_q12_4(240, -180, 8 << 16, 0, 9, 7, 2, 1, 0x12345678u, 0xBEEFu,
+		                                                    CHAFF_ROT_ATAN_COS_Q15, CHAFF_ROT_ATAN_SIN_Q15);
+		int32_t fbm_min5 = chaff_fbm_rotated_2d_q12_4(240, -180, 5, 9, 7, 2, 1, 0x12345678u, 0xBEEFu,
+		                                              CHAFF_ROT_ATAN_COS_Q15, CHAFF_ROT_ATAN_SIN_Q15);
+		assert(fbm_step8 == fbm_min5);
+
+		printf("PASS: continuous Nyquist scale-space weights and scale-filtered fBm verified\n");
 	}
 
 	printf("=== ALL CANONICAL LIBCHAFF TESTS PASSED ===\n");

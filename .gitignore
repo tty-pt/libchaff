@@ -7,3 +7,4 @@
 npm/build/
 npm/dist/*.wasm
 npm/node_modules/
+objects-set.mk

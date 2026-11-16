@@ -6,12 +6,12 @@
 
 [![npm](https://img.shields.io/badge/npm-@tty--pt/chaff-CB3837?logo=npm)](npm/README.md)
 [![C99](https://img.shields.io/badge/C-C99-555?logo=c)](#)
-[![CC BY-NC-SA 4.0](https://img.shields.io/badge/License-CC%20BY--NC--SA%204.0-blue)](#)
+[![BSD-2-Clause](https://img.shields.io/badge/License-BSD--2--Clause-blue)](LICENSE)
 [![Zero Floats](https://img.shields.io/badge/FPU-zero%20floats-16A34A)](#)
 [![Deterministic](https://img.shields.io/badge/parity-CPU%20%2B%20GPU%20bit--exact-blueviolet)](#)
 [![Zero OpenGL](https://img.shields.io/badge/server-zero%20OpenGL-brightgreen)](#)
 
-> High-efficiency procedural noise engine, multi-scale recursive LOD, seamless 2's complement data type boundary wrapping, and $C^2$ anti-resonance multi-octave synthesis for glitch-free planetary terrain and bathymetry. Canonical headers are `<ttypt/chaff.h>` and `<ttypt/noise.h>`.
+> High-efficiency procedural noise engine, multi-scale recursive LOD, periodic domain wrapping, and $C^2$ anti-resonance multi-octave synthesis for glitch-free planetary terrain, bathymetry, and 4D atmospheric fields. Canonical headers are `<ttypt/chaff.h>`, `<ttypt/noise.h>`, and `<ttypt/chaff_glsl.h>`.
 
 ---
 
@@ -303,6 +303,9 @@ The library provides two primary headers: `<ttypt/chaff.h>` (modern declarative 
 | `chaff_field_t` | `<ttypt/chaff.h>` | Multi-layer declarative field descriptor with seed, dimensionality, and layer array. |
 | `chaff_sample_2d_t` | `<ttypt/chaff.h>` | 2D query result: `int32_t elevation`, analytical slopes `int16_t grad_x`, `grad_y`. |
 | `chaff_sample_3d_t` | `<ttypt/chaff.h>` | 3D query result: `int32_t val`, analytical gradients `grad_x`, `grad_y`, `grad_z`. |
+| `chaff_sample_4d_t` | `<ttypt/chaff.h>` | 4D query result: `int32_t val`, analytical gradients `grad_x`, `grad_y`, `grad_z`, `grad_w`. |
+| `chaff_fbm_opts_t` | `<ttypt/chaff.h>` | Struct-driven 2D rotated fractal octave accumulator options (`min_shift`, `max_shift`, `ridged_min_shift`, `period_shift`). |
+| `chaff_periodic_opts_t` | `<ttypt/chaff.h>` | Periodic 2D domain sampler descriptor (`shift`, `period_shift`, `vshift`, `seed`, `fade_flags`). |
 | `noise_wcache_t` | `<ttypt/noise.h>` | Lattice corner vertex cache for scanline and row stepping. |
 | `noise_scanline_t` | `<ttypt/noise.h>` | Declarative multi-octave scanline stepper state. |
 
@@ -311,21 +314,25 @@ The library provides two primary headers: `<ttypt/chaff.h>` (modern declarative 
 #### Sparse Point Samplers
 * `chaff_sample_grad_2d(field, wx, wy)`: Evaluates continuous 2D height and analytical surface slopes in a single pass with zero extra hashes.
 * `chaff_sample_grad_3d(field, x, y, z)`: Evaluates 3D value and spatial gradient $(dN/dx, dN/dy, dN/dz)$ using analytical Hermite derivatives in 8 corners.
+* `chaff_sample_grad_4d(field, x, y, z, w)`: Evaluates 4D value and spatio-temporal gradients $(dN/dx, dN/dy, dN/dz, dN/dw)$ across 16 hypercube corners.
 * `chaff_sample_rugged_2d(field, wx, wy)`: Point evaluation with irrational Golden-Ratio rotational skew applied across octaves to break lattice alignment.
-* `chaff_elevation_q12_4(world, lod, wx, wy, &coarse, &fine)`: Authoritative 12-octave continuous planetary elevation engine returning Q12.4 fixed-point elevation with calibrated sea-level zero-crossing.
+* `chaff_fbm_rotated_2d(&opts, x, y)` / `chaff_fbm_rotated_2d_q12_4(...)`: Parameterized 2D rotated fractal octave accumulator with ridged folding and optional periodic domain wrapping.
+* `chaff_wpoint_periodic_2d(x, y, shift, period_shift, vshift, seed)`: Continuous 2D periodic octave with domain period $2^{\text{period\_shift}}$.
 * `noise_point_n(p, seed, shift, dim)`: Generic $N$-dimensional zero-allocation point query ($N \in [1..4]$).
-* `noise_wpoint_n(p, shift, w, seed, dim, flags)`: Two's complement wrapping point query.
+* `noise_wpoint_n_periodic(p, shift, w, seed, dim, flags, period_shift)`: Two's complement wrapping and periodic point query.
 
 #### High-Throughput Matrix & Region Steppers
 * `chaff_fill(field, lo, hi, origin, step_q16, n, out, stride, mode)`: Primary fixed-point multi-layer region generator.
-* `chaff_fill_lod(field, lod, origin, step_q16, n, out, stride, mode)`: Band-limited region generator pruning sub-Nyquist octaves.
+* `chaff_fill_lod(field, min_shift, origin, step_q16, n, out, stride, mode)`: Band-limited region generator pruning sub-Nyquist octaves.
 * `chaff_fill_slice_3d(field, z, x0, y0, w, h, out_val, out_gx, out_gy)`: Bulk 2D slice stepper across 3D field; collapses $Z$ axis once per cell in registers (>96% hash reduction).
+* `chaff_fill_slice_4d(field, z, w, x0, y0, width, height, out_val, out_gx, out_gy, out_gz, out_gw)`: Bulk 2D slice stepper across 4D field; collapses $W$ and $Z$ axes once per 4D cell in registers.
 * `noise_matrix_fill_2d(cfg, ox, oy, size_shift, out)`: Bulk macroscopic quad fill using register additions.
 * `noise_scanline_eval_row(scan, sx, y, z, count, out_row)`: Stepper fetching corners once per cell boundary.
 
 #### Coordinate Transformers & Math
 * `chaff_coord_scale(coord, power_of_two)`: Power-of-two zoom scaling for fixed-point coordinates.
-* `chaff_rotate_q15(&x, &y)`: Fixed-point rotation by Golden-Ratio angle ($\theta \approx 31.7^\circ$).
+* `chaff_rotate_q15(&x, &y)` / `chaff_rot2d_i32_q15(&x, &y, cos_q15, sin_q15)`: Fixed-point rotation by Golden-Ratio angle ($\theta \approx 31.7^\circ$).
+* `chaff_octave_amplitude_ex(shift, min_shift, base_amp)`: Parameterized $1/f$ monotonic fractal amplitude scaling.
 * `noise_fdiv(a, b)`: Euclidean integer floor division preserving mathematical continuity across negative coordinates.
 * `noise_wfade5(f, x)`: $C^2$ continuous quintic Hermite polynomial $6t^5 - 15t^4 + 10t^3$ mapping $[0..2^x)$ to $[0..2^x)$.
 
@@ -348,8 +355,6 @@ Empirical throughput measured on standard host environment:
 | **Analytical 3D Gradient** | `chaff_sample_grad_3d` | **2.32 Mops/s** | 430.71 ns/op | 3 octaves, **0 additional hashes** |
 | **2D Time-Slice Stepper** | `chaff_fill_slice_3d` | **88.44 Mops/s** | 11.31 ns/sample | **37.30x speedup** vs 3D point query (2.37 Mops/s); **>96% corner hash reduction** |
 | **1D Scanline Stepper** | `noise_scanline_eval_row` | **120.23 Mops/s** | 8.32 ns/sample | 17 corner fetches per 256 pixels |
-| **Planetary 12-Octave LOD 3** | `chaff_elevation_q12_4` | **1.33 Mops/s** | 754.63 ns/op | Full 12 octaves, sub-pixel relief |
-| **Planetary 12-Octave LOD 0** | `chaff_elevation_q12_4` | **2.64 Mops/s** | 378.11 ns/op | Macro 6 octaves, **2.00x Nyquist speedup** |
 
 ---
 
@@ -370,80 +375,39 @@ make -C external/libchaff bench
 
 ### Modular Test Suite Layout
 1. **Core Engine Suite (`bin/test_noise`)**: 35 automated assertions verifying 1D–4D point sampling, hypercube matrix stepping, scanline caches, plane steppers, and boundary continuity.
-2. **Canonical libchaff Public API Suite (`bin/test_chaff`)**: 11 comprehensive sections verifying point wrappers (`chaff_point_1d`..`4d`, `chaff_point_n`), canonical matrix/sample adapters (`chaff_oct`, `chaff_matrix_fill_2d`), `chaff_coord_scale`, `chaff_fade_frac`, 1D/3D volume `chaff_fill` in SET and ADD modes, coordinate skewing, contrast, 2D/3D analytical gradients, 2D time-slice stepping (`chaff_fill_slice_3d`) across multi-cell and negative coordinates, rotational skew (`chaff_rotate_q15`, `chaff_rotate_q15_inplace`), planetary 12-octave elevation (`chaff_elevation_q12_4`), and defensive NULL-safety guards.
-3. **Shared Library Exported ABI Suite (`bin/test_symbols`)**: 5 sections verifying that all exported symbols in `src/libchaff.c` (`ttypt_noise_*`, `chaff_*_sym`, `ttypt_chaff_fill`, `chaff_fill_sym`, `chaff_sample_grad_3d_sym`, `chaff_fill_slice_3d_sym`) resolve cleanly and match inline header functions bit-for-bit.
-4. **GLSL ES 3.0 GPU Shader Contract Suite (`bin/test_glsl`)**: 8 sections verifying shader strings, uniform buffer structure layout (`chaff_gl_uniforms_t`), rotl32 bit operations, bit-exact 2D/3D integer hashes (`chaff_hash2`, `chaff_hash3`), continuous octave sampling, 3D analytical gradients, and Golden-Ratio rotation parameters.
-
-### Verified Test Suite Assertions
-1. **Generic Point Sampling**: 1D, 2D, 3D, and 4D sampling bounded within valid [0..255] bounds.
-2. **Deterministic Parity**: Identical output across repeated calls with identical seeds.
-3. **3D Point Continuity**: Value continuity verified along arbitrary 3D spatial trajectories.
-4. **Generic Matrix Stepping**: Hypercube forward-difference stepping in 2D and 3D.
-5. **Wrapping Sampler Equivalence**: Value-equal to `noise_m` across 232,368 sample grid.
-6. **Data Type Boundary Wrapping**: 0 seams across $32767 \to -32768$ boundary on all axes.
-7. **Animation Counter Continuity**: `int16_t` casting of continuously increasing counter runs seamlessly.
-8. **Stepper & Point Equivalence**: Cached point and row stepper produce bit-exact values to point sampler.
-9. **Corner Reuse Efficiency**: Row stepper fetches only 17 corners for 256 pixels at shift 4.
-10. **Lattice Identity Mapping**: Fade maps $[0, 2^x)$ onto itself preserving boundary corners.
-11. **Plane Stepper Efficiency**: Plane stepper fetches only 16 corners for $64 \times 64$ pixels at shift 4.
-12. **Declarative Point Determinism**: 2D and 3D declarative field evaluation determinism.
-13. **Bulk Matrix 2D Fill**: Non-zero surface coverage verified across coordinate plane.
-14. **Scanline Cache Efficiency**: Row evaluation amortizes lattice corners with zero redundant fetches.
-15. **Cross-Representation Equivalence**: `point == row[k] == matrix[r][k]` across 2D & 3D wrap boundaries.
-16. **Chaff & Noise Octave Parity**: `chaff_fill` at fractional zero equals `noise_oct` bit-for-bit.
-17. **Layer Nesting Linearity**: $\sum(0..1) + \sum(1..3) == \sum(0..3)$ verified with fractional coordinates.
-18. **Fixed-Point Coordinate Scaling**: `chaff_coord_scale` verified across recursive power-of-two zoom levels.
-19. **Band-Limited Nyquist Cuts**: `chaff_fill_lod` correctly suppresses sub-Nyquist high frequencies.
-20. **Analytical Gradient Shader Contract**: Analytical Hermite gradients exported to GLSL interface.
-21. **Bit-Exact GLSL Shader Hash**: `chaff_hash2` is 100% bit-exact with CPU XXH32 across coordinate grid.
-22. **Continuous GLSL Level-Set Parity**: GLSL evaluation matches CPU `chaff_fill` within numerical tolerance.
-23. **Monotonic Sub-Cell Ramps**: Sub-cell slope ramps are strictly monotonic without truncation cliffs.
-24. **$C^2$ Quintic Hermite Polynomial**: `NOISE_FADE5` verified with zero 1st and 2nd derivatives at cell edges.
-25. **Active Pipeline $C^2$ Integration**: `NOISE_FADE5` and `chaff_lerp` active in continuous sampling.
-26. **3D GLSL Hash Parity**: `chaff_hash3` reference implementation verified across 3D grid.
-27. **3D Analytical Gradient Parity**: Analytical Hermite gradients match numerical derivatives on CPU.
-28. **3D Slice Bit-Exactness**: `chaff_fill_slice_3d` is 100% bit-exact to `chaff_sample_grad_3d` (1024/1024 samples).
-29. **3D Slice Hash Amortization**: `chaff_fill_slice_3d` collapses $Z$ axis once per cell (>96% hash reduction).
-30. **GLSL 3D Gradient Parity**: GLSL analytical gradient matches numerical limit within numerical tolerance.
-31. **Promise 1 (Integer Operations)**: `noise_fdiv` satisfies Euclidean invariant ($0 \le r < |b|$) across all negative/positive coordinates.
-32. **Promise 2 (Boundary Wrapping)**: 0 seams across `int16_t` wrap ($32767 \to -32768$) in multi-octave fields (step $\le$ normal intra-cell limit).
-33. **Promise 3 (Anti-Resonance Skew)**: Golden-Ratio rotational skew (`chaff_rotate_q15`) breaks Cartesian lattice alignment.
-34. **Promise 4 (Recursive LOD Conservation)**: Multi-scale recursive LOD downsampling preserves regional mean elevation.
-35. **Promise 5 (Glitch-Free Planet)**: Continuous planetary terrain across room divisor boundaries ($wx = 79 \to 80$).
+2. **Canonical libchaff Public API Suite (`bin/test_chaff`)**: Comprehensive sections verifying point wrappers (`chaff_point_1d`..`4d`, `chaff_point_n`), canonical matrix/sample adapters (`chaff_oct`, `chaff_matrix_fill_2d`), `chaff_coord_scale`, `chaff_fade_frac`, 1D/3D volume `chaff_fill` in SET and ADD modes, coordinate skewing, periodic domain tiling (`period_shift`), contrast, 2D/3D/4D analytical gradients, 2D time-slice stepping (`chaff_fill_slice_3d`, `chaff_fill_slice_4d`) across multi-cell and negative coordinates, rotational skew (`chaff_rotate_q15`, `chaff_rotate_q15_inplace`), rotated FBM (`chaff_fbm_rotated_2d`), banded flow evaluation, and defensive NULL-safety guards.
+3. **Shared Library Exported ABI Suite (`bin/test_symbols`)**: Verifies that all exported symbols in `src/libchaff.c` resolve cleanly and match inline header functions bit-for-bit.
+4. **GLSL ES 3.0 GPU Shader Contract Suite (`bin/test_glsl`)**: Verifies shader strings, uniform buffer structure layout (`chaff_gl_uniforms_t`), rotl32 bit operations, bit-exact 2D/3D/4D integer hashes (`chaff_hash2`, `chaff_hash3`, `chaff_hash4`), continuous octave sampling, analytical gradients, and Golden-Ratio rotation parameters.
 
 ---
 
----
+## 11. Spatial Index & Quadtree Integration (`libareole`)
 
-## 11. Spatial Index & Quadtree Integration (`libchunk`)
-
-`libchaff` is designed to pair directly with `libchunk` (`<ttypt/chunk.h>`) for real-time 3D planetary rendering, camera frustum culling, and multi-scale LOD management.
+`libchaff` is designed to pair directly with `libareole` (`<ttypt/areole.h>`) for real-time 3D planetary rendering, camera frustum culling, and multi-scale LOD management.
 
 ### Canonical Sampler Binding
 ```c
 #include <ttypt/chaff.h>
-#include <ttypt/chunk.h>
+#include <ttypt/areole.h>
 
-void chaff_chunk_sampler(void *user_ctx, uint16_t world, uint8_t level,
-                         int32_t wx, int32_t wy, chunk_sample_t *out)
+void chaff_areole_sampler(void *user_ctx, uint16_t world, uint8_t level,
+                          int32_t wx, int32_t wy, ar_sample_t *out)
 {
-    /* Select appropriate procedural LOD based on quadtree hierarchy level */
-    uint8_t lod = (level >= 6) ? 0 : ((level >= 3) ? 1 : (uint8_t)(3 - level));
-    int32_t coarse = 0, fine = 0;
-    int32_t elev_q12_4 = chaff_elevation_q12_4(world, lod, wx, wy, &coarse, &fine);
+    uint8_t min_shift = (level >= 6) ? 6 : (uint8_t)(2 + level);
+    int32_t elev_q12_4 = chaff_fbm_rotated_2d_q12_4(
+        wx, wy, min_shift, 14, 6, 2, 1,
+        (uint32_t)world * 2654435761u, 0x9E3779B9u,
+        CHAFF_ROT_GOLD_COS_Q15, CHAFF_ROT_GOLD_SIN_Q15);
 
-    /* Pack into generic libchunk spatial sample */
     out->val = (int16_t)elev_q12_4;
-    out->attr[0] = (elev_q12_4 > 100 * 16) ? 2 : 10; /* Biome / material */
-    out->attr[1] = out->attr[0];
-    out->attr[2] = 0;
-    out->attr[3] = (elev_q12_4 < 0) ? (uint8_t)(-elev_q12_4 >> 4) : 0; /* Water depth */
+    out->attr[0] = (elev_q12_4 > 100 * 16) ? 2 : 10;
+    out->attr[3] = (elev_q12_4 < 0) ? (uint8_t)(-elev_q12_4 >> 4) : 0;
     out->rgba = (out->attr[3] > 0) ? 0xFF003080u : 0xFF208020u;
-    out->flags = (out->attr[3] > 0) ? 1 : 0;
+    out->flags = (out->attr[3] > 0) ? AR_NODE_FLAG_USER0 : 0;
 }
 ```
 
-The resulting chunk system can be queried with column-major $4 \times 4$ ModelView-Projection (MVP) matrices using Gribb-Hartmann 6-plane frustum extraction and analytic spherical curvature sag envelopes via `chunk_system_query_matrix()`.
+The resulting spatial hierarchy can be queried with column-major $4 \times 4$ ModelView-Projection (MVP) matrices using Gribb-Hartmann 6-plane frustum extraction and pluggable vertical/3D manifold envelopes via `ar_system_query_matrix()`.
 
 ---
 
@@ -456,7 +420,7 @@ Prebuilt packages for Linux (APT / Alpine / Arch / Fedora-RHEL), macOS (Homebrew
 ```sh
 make              # builds lib/libchaff.so and lib/libnoise.so
 make wasm         # builds npm/dist/chaff.wasm
-make test         # runs the 35-assertion C & GLSL parity verification suite
+make test         # runs the C & GLSL parity verification suite
 make npm-test     # runs the Node.js & WebAssembly test suite
 sudo make install # install headers and libraries to system
 ```
@@ -477,4 +441,4 @@ See [npm/README.md](npm/README.md) for the full TypeScript, WebAssembly, and GLS
 
 ## License
 
-CC BY-NC-SA 4.0 — Author: Paulo Quirino <q@qnixsoft.com>
+BSD 2-Clause License — Copyright (c) 2026, tty-pt. See `LICENSE`.

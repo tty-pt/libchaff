@@ -69,6 +69,8 @@ ttypt_noise_mix32(const void *key, size_t len, uint32_t seed)
 #endif
 
 #define NOISE_MAX ((uint32_t) -1)
+#define NOISE_MAX_DIM 4u
+#define NOISE_DEFAULT_VSHIFT 8u
 #define COORDMASK_LSHIFT(x) (uint16_t) ((((uint16_t) -1) << (x)))
 
 typedef struct {
@@ -108,8 +110,32 @@ noise_get_v(uint32_t *v, int16_t *s, uint16_t x, unsigned w, unsigned seed, uint
 	}
 }
 
+/* Generate values at N-dimensional quad vertices with optional periodic domain wrapping */
 static inline void
-calc_steps(int32_t *st, uint32_t *v, uint16_t z, uint16_t vl, unsigned y)
+noise_get_v_periodic(uint32_t *v, const int16_t *s, uint16_t x, unsigned w,
+                     unsigned seed, uint8_t dim, uint8_t period_shift)
+{
+	if (period_shift == 0 || x > period_shift) {
+		noise_get_v(v, (int16_t *)s, x, w, seed, dim);
+		return;
+	}
+	const uint16_t period_mask = (period_shift >= 16u) ? 0xFFFFu : (uint16_t)((1u << period_shift) - 1u);
+	const uint16_t step_p = (uint16_t)(1u << x);
+	int16_t va[dim * (1 << dim)];
+	int i, j;
+
+	for (i = 0; i < (1 << dim); i++) {
+		for (j = 0; j < dim; j++) {
+			uint16_t base = (uint16_t)s[j] & period_mask;
+			uint16_t off = (i & (1 << (dim - j - 1))) ? step_p : 0u;
+			va[i * dim + j] = (int16_t)((base + off) & period_mask);
+		}
+		v[i] = noise_r(va + dim * i, seed, w, dim);
+	}
+}
+
+static inline void
+noise_calc_steps(int32_t *st, uint32_t *v, uint16_t z, uint16_t vl, unsigned y)
 {
 	int n;
 	for (n = 0; n < vl; n++)
@@ -117,7 +143,7 @@ calc_steps(int32_t *st, uint32_t *v, uint16_t z, uint16_t vl, unsigned y)
 }
 
 static inline void
-step(uint32_t *v, int32_t *st, uint16_t vl, uint16_t mul)
+noise_step(uint32_t *v, int32_t *st, uint16_t vl, uint16_t mul)
 {
 	int n;
 	for (n = 0; n < vl; n++)
@@ -141,7 +167,7 @@ noise_quad(uint32_t *c, uint32_t *vc, unsigned z, unsigned cy, uint8_t dim)
 start:			ce_p[ndim] = c + (cd << z);
 			vt = vc + (tvl << 1);
 
-			calc_steps(stc, vc, z, tvl, 0);
+			noise_calc_steps(stc, vc, z, tvl, 0);
 			memcpy(vt, vc, tvl * sizeof(uint32_t));
 		} while (ndim);
 
@@ -155,7 +181,7 @@ start:			ce_p[ndim] = c + (cd << z);
 			c -= cd << z; cd <<= cy; vt = vc;
 			tvl <<= 1; stc -= tvl; vc -= (tvl << 1);
 
-			step(vt, stc, tvl, 1);
+			noise_step(vt, stc, tvl, 1);
 			c += cd;
 		} while (c >= ce_p[ndim]);
 	} while (1);
@@ -191,17 +217,17 @@ _noise_m(uint32_t *c, uint32_t *v, unsigned x, int16_t *qs, unsigned w,
 }
 
 static inline void
-__fix_v(uint32_t *v, int32_t *st, int16_t *ms, int16_t *qs, unsigned x, uint16_t vl, unsigned cy)
+_noise_fix_v_step(uint32_t *v, int32_t *st, int16_t *ms, int16_t *qs, unsigned x, uint16_t vl, unsigned cy)
 {
 	register uint32_t *vn = v + vl;
 	register uint16_t dd = (*ms - *qs) >> cy;
 
-	calc_steps(st, v, x, vl, cy);
+	noise_calc_steps(st, v, x, vl, cy);
 	if (dd)
-		step(v, st, vl, dd);
+		noise_step(v, st, vl, dd);
 
 	memcpy(vn, v, sizeof(uint32_t) * vl);
-	step(vn, st, vl, 1);
+	noise_step(vn, st, vl, 1);
 }
 
 static inline void
@@ -214,7 +240,7 @@ noise_fix_v(uint32_t *v, int16_t *qs, int16_t *ms, unsigned x, unsigned cy, uint
 	vl >>= 1;
 
 	for (;;) {
-		__fix_v(v, stc, ms, qs, x, vl, cy);
+		_noise_fix_v_step(v, stc, ms, qs, x, vl, cy);
 		if (ndim) {
 			ndim--; qs++; ms++; vl >>= 1; stc += vl;
 		} else if (first) {
@@ -261,17 +287,24 @@ noise_oct(uint32_t *m, int16_t *s, size_t oct_n, octave_t *oct, unsigned seed, u
 
 /* --- Generic N-Dimensional Point Sampler --------------------------------- */
 
-/* Evaluates continuous N-dimensional smoothstep value noise at point p[dim].
- * Returns fixed-point value in range 0..255. Zero heap allocations. */
+/* Evaluates continuous N-dimensional smoothstep value noise at point p[dim]
+ * with configurable bit-shift divider `vshift` (1..15; 0 defaults to NOISE_DEFAULT_VSHIFT = 8).
+ * Returns fixed-point value in range 0 .. (1 << (16 - vshift)) - 1. Zero heap allocations. */
 static inline int
-noise_point_n(const int16_t *p, uint32_t seed, uint8_t shift, uint8_t dim)
+noise_point_n_ex(const int16_t *p, uint32_t seed, uint8_t shift, uint8_t dim, uint8_t vshift)
 {
-	if (dim == 0 || dim > 4)
-		return 128;
+	unsigned vs = (vshift > 0u && vshift < 16u) ? (unsigned)vshift : NOISE_DEFAULT_VSHIFT;
+	unsigned bits = 16u - vs;
+	uint32_t range = 1u << bits;
+	uint32_t mask = range - 1u;
+	unsigned hash_rshift = 16u + vs;
+
+	if (!p || dim == 0 || dim > NOISE_MAX_DIM)
+		return (int)(range >> 1);
 
 	int cell = 1 << shift;
-	int16_t g[4];
-	int s[4];
+	int16_t g[NOISE_MAX_DIM];
+	int s[NOISE_MAX_DIM];
 
 	for (int i = 0; i < dim; i++) {
 		int gi = noise_fdiv(p[i], cell);
@@ -282,13 +315,13 @@ noise_point_n(const int16_t *p, uint32_t seed, uint8_t shift, uint8_t dim)
 
 	/* Fetch random values at the 2^dim hypercube vertices */
 	int num_v = 1 << dim;
-	int v[16];
-	int16_t corner[4];
+	int v[1 << NOISE_MAX_DIM];
+	int16_t corner[NOISE_MAX_DIM] = { 0, 0, 0, 0 };
 
 	for (int i = 0; i < num_v; i++) {
 		for (int j = 0; j < dim; j++)
 			corner[j] = g[j] + ((i >> (dim - 1 - j)) & 1);
-		v[i] = (int)(noise_r(corner, seed, 24, dim) & 0xFFu);
+		v[i] = (int)(noise_r(corner, seed, hash_rshift, dim) & mask);
 	}
 
 	/* Multilinear interpolation across dimensions */
@@ -305,6 +338,14 @@ noise_point_n(const int16_t *p, uint32_t seed, uint8_t shift, uint8_t dim)
 	}
 
 	return v[0];
+}
+
+/* Evaluates continuous N-dimensional smoothstep value noise at point p[dim].
+ * Returns fixed-point value in range 0..255. Zero heap allocations. */
+static inline int
+noise_point_n(const int16_t *p, uint32_t seed, uint8_t shift, uint8_t dim)
+{
+	return noise_point_n_ex(p, seed, shift, dim, NOISE_DEFAULT_VSHIFT);
 }
 
 /* --- Wrapping Original-Algorithm Sampler --------------------------------- */
@@ -413,6 +454,19 @@ noise_wpoint_n(const int16_t *p, unsigned x, unsigned w, unsigned seed, uint8_t 
 	return v[0];
 }
 
+/* Uncached point query with optional periodic domain wrapping */
+static inline uint32_t
+noise_wpoint_n_periodic(const int16_t *p, unsigned x, unsigned w, unsigned seed,
+                        uint8_t dim, unsigned flags, uint8_t period_shift)
+{
+	int16_t s[4];
+	uint32_t f[4], v[16];
+	noise_wcell(s, f, p, x, flags, dim);
+	noise_get_v_periodic(v, s, (uint16_t)x, w, seed, dim, period_shift);
+	noise_wreduce(v, f, x, dim, dim, flags);
+	return v[0];
+}
+
 static inline uint32_t
 noise_wpoint_2d(int16_t x0, int16_t x1, unsigned x, unsigned w, unsigned seed, unsigned flags)
 {
@@ -435,7 +489,7 @@ typedef struct {
 	int16_t s[4];
 	uint32_t v[16];
 	unsigned x, w, seed;
-	uint8_t dim, valid;
+	uint8_t dim, valid, period_shift;
 	uint32_t fetches;
 } noise_wcache_t;
 
@@ -449,13 +503,36 @@ noise_wcache_init(noise_wcache_t *c)
 static inline const uint32_t *
 noise_wcorners(noise_wcache_t *c, int16_t *s, unsigned x, unsigned w, unsigned seed, uint8_t dim)
 {
-	int hit = c->valid && c->x == x && c->w == w && c->seed == seed && c->dim == dim;
+	int hit = c->valid && c->x == x && c->w == w && c->seed == seed && c->dim == dim && c->period_shift == 0;
 	for (unsigned j = 0; hit && j < dim; j++)
 		hit = c->s[j] == s[j];
 	if (!hit) {
 		noise_get_v(c->v, s, x, w, seed, dim);
 		memcpy(c->s, s, sizeof(int16_t) * dim);
-		c->x = x; c->w = w; c->seed = seed; c->dim = dim; c->valid = 1;
+		c->x = x; c->w = w; c->seed = seed; c->dim = dim; c->period_shift = 0; c->valid = 1;
+		c->fetches++;
+	}
+	return c->v;
+}
+
+/* Vertex values of the cell at s with optional periodic domain wrapping */
+static inline const uint32_t *
+noise_wcorners_periodic(noise_wcache_t *c, const int16_t *s, unsigned x, unsigned w,
+                        unsigned seed, uint8_t dim, uint8_t period_shift)
+{
+	if (period_shift == 0 || x > period_shift)
+		return noise_wcorners(c, (int16_t *)s, x, w, seed, dim);
+	uint16_t period_mask = (period_shift >= 16u) ? 0xFFFFu : (uint16_t)((1u << period_shift) - 1u);
+	int16_t ws[4];
+	for (unsigned j = 0; j < dim; j++)
+		ws[j] = (int16_t)((uint16_t)s[j] & period_mask);
+	int hit = c->valid && c->x == x && c->w == w && c->seed == seed && c->dim == dim && c->period_shift == period_shift;
+	for (unsigned j = 0; hit && j < dim; j++)
+		hit = c->s[j] == ws[j];
+	if (!hit) {
+		noise_get_v_periodic(c->v, ws, (uint16_t)x, w, seed, dim, period_shift);
+		memcpy(c->s, ws, sizeof(int16_t) * dim);
+		c->x = x; c->w = w; c->seed = seed; c->dim = dim; c->period_shift = period_shift; c->valid = 1;
 		c->fetches++;
 	}
 	return c->v;
@@ -469,6 +546,19 @@ noise_wpoint_c(noise_wcache_t *c, const int16_t *p, unsigned x, unsigned w, unsi
 	uint32_t f[4], v[16];
 	noise_wcell(s, f, p, x, flags, dim);
 	memcpy(v, noise_wcorners(c, s, x, w, seed, dim), sizeof(uint32_t) << dim);
+	noise_wreduce(v, f, x, dim, dim, flags);
+	return v[0];
+}
+
+/* Cached point query with optional periodic domain wrapping */
+static inline uint32_t
+noise_wpoint_c_periodic(noise_wcache_t *c, const int16_t *p, unsigned x, unsigned w,
+                        unsigned seed, uint8_t dim, unsigned flags, uint8_t period_shift)
+{
+	int16_t s[4];
+	uint32_t f[4], v[16];
+	noise_wcell(s, f, p, x, flags, dim);
+	memcpy(v, noise_wcorners_periodic(c, s, x, w, seed, dim, period_shift), sizeof(uint32_t) << dim);
 	noise_wreduce(v, f, x, dim, dim, flags);
 	return v[0];
 }
@@ -656,6 +746,9 @@ static inline int chaff_point_4d(int16_t x, int16_t y, int16_t z, int16_t w, uin
 static inline int chaff_point_n(const int16_t *p, uint32_t seed, uint8_t shift, uint8_t dim) {
 	return noise_point_n(p, seed, shift, dim);
 }
+static inline int chaff_point_n_ex(const int16_t *p, uint32_t seed, uint8_t shift, uint8_t dim, uint8_t vshift) {
+	return noise_point_n_ex(p, seed, shift, dim, vshift);
+}
 static inline void chaff_oct(uint32_t *m, int16_t *s, size_t oct_n, octave_t *oct, unsigned seed, unsigned cy, uint8_t dim) {
 	noise_oct(m, s, oct_n, oct, seed, cy, dim);
 }
@@ -683,21 +776,31 @@ typedef struct {
 #define CHAFF_MODE_SET 0u
 #define CHAFF_MODE_ADD 1u
 
-#define CHAFF_SEED_SHARED    0u    /* One seed for all layers (server worldgen convention) */
-#define CHAFF_SEED_PER_LAYER 1u    /* Seed derived per layer: seed ^ (l * 0x85EBCA77u + 1) */
+#define CHAFF_SEED_SHARED    0u    /* One seed for all layers */
+#define CHAFF_SEED_PER_LAYER 1u    /* Seed derived per layer: seed ^ (l * CHAFF_SEED_PRIME + 1) */
 #define CHAFF_LAYER_LINEAR   0u    /* Standard linear signed layer amplitude */
 #define CHAFF_LAYER_RIDGED   0x80u /* Ridged multifractal folding bitflag on seed_mode */
 
-#define CHAFF_FLAG_FADE 1u
+#define CHAFF_FLAG_FADE   1u
+#define CHAFF_FLAG_FADE5  2u
+#define CHAFF_FLAG_LINEAR 0x80u
+
+/** Identity contrast multiplier in Q8.8 fixed-point (256 = 1.0x). */
+#define NOISE_CONTRAST_IDENTITY 256u
+
+/** Per-layer seed decorrelation multiplier (Murmur3 finalizer constant). */
+#define CHAFF_SEED_PRIME 0x85EBCA77u
 
 /* Universal layer descriptor */
 typedef struct {
-	uint8_t  shift;     /* Lattice size 2^shift (e.g. 7 = 128, 2 = 4) */
-	uint8_t  vshift;    /* Value right shift: hash >> vshift (default 8; server octave_t.w) */
-	int16_t  amp;       /* Signed amplitude multiplier (0 = raw unsigned hash >> vshift) */
-	uint8_t  seed_mode; /* CHAFF_SEED_SHARED or CHAFF_SEED_PER_LAYER (| CHAFF_LAYER_RIDGED) */
-	int8_t   skew[2];   /* Affine domain skew: skew[0]=x, skew[1]=y */
-	uint16_t contrast;  /* Contrast multiplier: 256 = 1.0x (0 or 256 = identity) */
+	uint8_t  shift;        /* Lattice size 2^shift (e.g. 7 = 128, 2 = 4) */
+	uint8_t  vshift;       /* Value right shift: hash >> vshift (default NOISE_DEFAULT_VSHIFT) */
+	int16_t  amp;          /* Signed amplitude multiplier (0 = raw unsigned hash >> vshift) */
+	uint8_t  seed_mode;    /* CHAFF_SEED_SHARED or CHAFF_SEED_PER_LAYER (| CHAFF_LAYER_RIDGED) */
+	int8_t   skew[2];      /* Affine domain skew: skew[0]=x, skew[1]=y */
+	uint16_t contrast;     /* Contrast multiplier: 256 = 1.0x (0 or 256 = identity) */
+	uint8_t  period_shift; /* Optional periodic domain shift 2^period_shift (0 = unbounded) */
+	uint32_t seed_salt;    /* Optional per-layer seed salt override (0 = use field->seed_salt or 1) */
 } chaff_layer_t;
 
 /* Universal field descriptor */
@@ -707,18 +810,53 @@ typedef struct {
 	uint8_t  flags;
 	uint8_t  nlayers;
 	const chaff_layer_t *layers;
+	uint32_t seed_prime;   /* Optional per-layer seed prime (0 = CHAFF_SEED_PRIME) */
+	uint32_t seed_salt;    /* Optional per-layer seed salt offset (0 = 1u) */
+	int16_t  rot_cos_q15;  /* Optional inter-octave rotation cos in Q15 (0 = default in rugged_2d) */
+	int16_t  rot_sin_q15;  /* Optional inter-octave rotation sin in Q15 (0 = default in rugged_2d) */
 } chaff_field_t;
 
-/* Fractional fade helper: Hermite smoothstep across cell in 16.16 */
 static inline uint32_t
-chaff_fade_frac(uint32_t fi, uint16_t frac, unsigned x)
+chaff_layer_seed(const chaff_field_t *field, const chaff_layer_t *lay, uint8_t l)
 {
+	if (!field || !lay) return 0;
+	if ((lay->seed_mode & 0x01u) == CHAFF_SEED_SHARED)
+		return field->seed ^ lay->seed_salt;
+	uint32_t prime = field->seed_prime ? field->seed_prime : CHAFF_SEED_PRIME;
+	uint32_t salt  = lay->seed_salt ? lay->seed_salt : (field->seed_salt ? field->seed_salt : 1u);
+	return field->seed ^ (uint32_t)(l * prime + salt);
+}
+
+/* Fractional fade helper with selectable C1 cubic Hermite or C2 quintic Hermite in 16.16 */
+static inline uint32_t
+chaff_fade_frac_ex(uint32_t fi, uint16_t frac, unsigned x, uint8_t flags)
+{
+	if (flags & CHAFF_FLAG_FADE5) {
+		if (frac == 0)
+			return noise_wfade5(fi, x) << 16;
+		uint64_t t = (((uint64_t)fi << 16) | frac) >> x;
+		if (t > 65536ull) t = 65536ull;
+		uint64_t p1 = ((t * 6ull) >> 16);
+		int64_t  p2 = (int64_t)p1 - (15ll << 16);
+		int64_t  p3 = (((int64_t)t * p2) >> 16) + (10ll << 16);
+		uint64_t t2 = (t * t) >> 16;
+		uint64_t t3 = (t2 * t) >> 16;
+		uint64_t faded_t = (t3 * (uint64_t)p3) >> 16;
+		if (faded_t > 65536ull) faded_t = 65536ull;
+		return (uint32_t)(faded_t << x);
+	}
 	if (frac == 0)
 		return noise_wfade(fi, x) << 16;
 	uint64_t t = (((uint64_t)fi << 16) | frac) >> x;
 	if (t > 65536ull) t = 65536ull;
 	uint64_t faded_t = (t * t * (3ull * 65536ull - 2ull * t)) >> 32;
 	return (uint32_t)(faded_t << x);
+}
+
+static inline uint32_t
+chaff_fade_frac(uint32_t fi, uint16_t frac, unsigned x)
+{
+	return chaff_fade_frac_ex(fi, frac, x, CHAFF_FLAG_FADE);
 }
 
 /* Primary multi-layer region generator (point, row, plane, volume).
@@ -756,15 +894,19 @@ chaff_fill(const chaff_field_t *field,
 	if (layer_lo >= layer_hi) return;
 
 	noise_wcache_t cache;
+	int use_fade = (field->flags & (CHAFF_FLAG_FADE | CHAFF_FLAG_FADE5)) != 0 &&
+	               (field->flags & CHAFF_FLAG_LINEAR) == 0;
 
 	for (uint8_t l = layer_lo; l < layer_hi; l++) {
 		const chaff_layer_t *lay = &field->layers[l];
-		uint32_t seed = ((lay->seed_mode & 0x01u) == CHAFF_SEED_SHARED) ?
-		                field->seed :
-		                (field->seed ^ (uint32_t)(l * 0x85EBCA77u + 1));
+		uint32_t seed = chaff_layer_seed(field, lay, l);
 		unsigned x = lay->shift;
-		unsigned vshift = lay->vshift ? lay->vshift : 8;
+		unsigned vshift = (lay->vshift && lay->vshift < 16u) ? lay->vshift : NOISE_DEFAULT_VSHIFT;
+		int32_t mid = (int32_t)(1u << (15u - vshift));
+		int32_t ridge_fold = mid >> 1;
+		unsigned amp_shift = 15u - vshift;
 		uint16_t mask = COORDMASK_LSHIFT(x);
+		uint8_t pshift = lay->period_shift;
 		noise_wcache_init(&cache);
 
 		int32_t base_w_q16 = (field->dim == 4) ?
@@ -825,23 +967,23 @@ chaff_fill(const chaff_field_t *field,
 						if (field->dim == 1) {
 							int16_t pt_s[1] = { (int16_t)(cell_x & mask) };
 							uint32_t fix = (uint16_t)cell_x & (uint16_t)~mask;
-							uint32_t ux = (field->flags & CHAFF_FLAG_FADE) ?
-							              chaff_fade_frac(fix, frac_x, x) :
+							uint32_t ux = use_fade ?
+							              chaff_fade_frac_ex(fix, frac_x, x, field->flags) :
 							              (((uint32_t)fix << 16) | frac_x);
-							const uint32_t *v = noise_wcorners(&cache, pt_s, x, vshift, seed, 1);
+							const uint32_t *v = noise_wcorners_periodic(&cache, pt_s, x, vshift, seed, 1, pshift);
 							int32_t st = noise_wstep_slope(v[0], v[1], x);
 							raw = v[0] + (uint32_t)(((int64_t)st * ux) >> 16);
 						} else if (field->dim == 2) {
 							int16_t pt_s[2] = { (int16_t)(cell_y & mask), (int16_t)(cell_x & mask) };
 							uint32_t fiy = (uint16_t)cell_y & (uint16_t)~mask;
 							uint32_t fix = (uint16_t)cell_x & (uint16_t)~mask;
-							uint32_t uy = (field->flags & CHAFF_FLAG_FADE) ?
-							              chaff_fade_frac(fiy, frac_y, x) :
+							uint32_t uy = use_fade ?
+							              chaff_fade_frac_ex(fiy, frac_y, x, field->flags) :
 							              (((uint32_t)fiy << 16) | frac_y);
-							uint32_t ux = (field->flags & CHAFF_FLAG_FADE) ?
-							              chaff_fade_frac(fix, frac_x, x) :
+							uint32_t ux = use_fade ?
+							              chaff_fade_frac_ex(fix, frac_x, x, field->flags) :
 							              (((uint32_t)fix << 16) | frac_x);
-							const uint32_t *v = noise_wcorners(&cache, pt_s, x, vshift, seed, 2);
+							const uint32_t *v = noise_wcorners_periodic(&cache, pt_s, x, vshift, seed, 2, pshift);
 							int32_t s0 = noise_wstep_slope(v[0], v[2], x);
 							int32_t s1 = noise_wstep_slope(v[1], v[3], x);
 							uint32_t b0 = v[0] + (uint32_t)(((int64_t)s0 * uy) >> 16);
@@ -853,16 +995,16 @@ chaff_fill(const chaff_field_t *field,
 							uint32_t fiz = (uint16_t)cell_z & (uint16_t)~mask;
 							uint32_t fiy = (uint16_t)cell_y & (uint16_t)~mask;
 							uint32_t fix = (uint16_t)cell_x & (uint16_t)~mask;
-							uint32_t uz = (field->flags & CHAFF_FLAG_FADE) ?
-							              chaff_fade_frac(fiz, frac_z, x) :
+							uint32_t uz = use_fade ?
+							              chaff_fade_frac_ex(fiz, frac_z, x, field->flags) :
 							              (((uint32_t)fiz << 16) | frac_z);
-							uint32_t uy = (field->flags & CHAFF_FLAG_FADE) ?
-							              chaff_fade_frac(fiy, frac_y, x) :
+							uint32_t uy = use_fade ?
+							              chaff_fade_frac_ex(fiy, frac_y, x, field->flags) :
 							              (((uint32_t)fiy << 16) | frac_y);
-							uint32_t ux = (field->flags & CHAFF_FLAG_FADE) ?
-							              chaff_fade_frac(fix, frac_x, x) :
+							uint32_t ux = use_fade ?
+							              chaff_fade_frac_ex(fix, frac_x, x, field->flags) :
 							              (((uint32_t)fix << 16) | frac_x);
-							const uint32_t *v = noise_wcorners(&cache, pt_s, x, vshift, seed, 3);
+							const uint32_t *v = noise_wcorners_periodic(&cache, pt_s, x, vshift, seed, 3, pshift);
 							uint32_t c_mid[4];
 							for (int i = 0; i < 4; i++) {
 								int32_t st_z = noise_wstep_slope(v[i], v[i + 4], x);
@@ -885,19 +1027,19 @@ chaff_fill(const chaff_field_t *field,
 							uint32_t fiz = (uint16_t)cell_z & (uint16_t)~mask;
 							uint32_t fiy = (uint16_t)cell_y & (uint16_t)~mask;
 							uint32_t fix = (uint16_t)cell_x & (uint16_t)~mask;
-							uint32_t uw = (field->flags & CHAFF_FLAG_FADE) ?
-							              chaff_fade_frac(fiw, frac_w, x) :
+							uint32_t uw = use_fade ?
+							              chaff_fade_frac_ex(fiw, frac_w, x, field->flags) :
 							              (((uint32_t)fiw << 16) | frac_w);
-							uint32_t uz = (field->flags & CHAFF_FLAG_FADE) ?
-							              chaff_fade_frac(fiz, frac_z, x) :
+							uint32_t uz = use_fade ?
+							              chaff_fade_frac_ex(fiz, frac_z, x, field->flags) :
 							              (((uint32_t)fiz << 16) | frac_z);
-							uint32_t uy = (field->flags & CHAFF_FLAG_FADE) ?
-							              chaff_fade_frac(fiy, frac_y, x) :
+							uint32_t uy = use_fade ?
+							              chaff_fade_frac_ex(fiy, frac_y, x, field->flags) :
 							              (((uint32_t)fiy << 16) | frac_y);
-							uint32_t ux = (field->flags & CHAFF_FLAG_FADE) ?
-							              chaff_fade_frac(fix, frac_x, x) :
+							uint32_t ux = use_fade ?
+							              chaff_fade_frac_ex(fix, frac_x, x, field->flags) :
 							              (((uint32_t)fix << 16) | frac_x);
-							const uint32_t *v = noise_wcorners(&cache, pt_s, x, vshift, seed, 4);
+							const uint32_t *v = noise_wcorners_periodic(&cache, pt_s, x, vshift, seed, 4, pshift);
 							uint32_t d_mid[8];
 							for (int i = 0; i < 8; i++) {
 								int32_t st_w = noise_wstep_slope(v[i], v[i + 8], x);
@@ -920,12 +1062,12 @@ chaff_fill(const chaff_field_t *field,
 						if (lay->amp == 0) {
 							sample = (int32_t)raw;
 						} else {
-							int32_t val = (int32_t)(raw >> 16) - 128;
+							int32_t val = (int32_t)(raw >> 16) - mid;
 							if (lay->seed_mode & CHAFF_LAYER_RIDGED)
-								val = 64 - abs(val);
-							if (lay->contrast != 0 && lay->contrast != 256)
+								val = ridge_fold - abs(val);
+							if (lay->contrast != 0 && lay->contrast != NOISE_CONTRAST_IDENTITY)
 								val = (val * (int32_t)lay->contrast) >> 8;
-							sample = (val * (int32_t)lay->amp) >> 7;
+							sample = (val * (int32_t)lay->amp) >> amp_shift;
 						}
 						row_out[c] += sample;
 					}
@@ -937,13 +1079,21 @@ chaff_fill(const chaff_field_t *field,
 
 /* --- Declarative Multi-Scale Cascades & Universal Accessors -------------- */
 
+/** Maximum number of octaves supported by noise_scanline_t and cascade evaluators. */
+#define NOISE_MAX_OCTAVES 16
+
+/** Flag for noise_cascade_t::flags to explicitly request raw linear interpolation (disabling NOISE_FADE). */
+#define NOISE_CASCADE_LINEAR 0x80u
+
 /* Single noise octave specification */
 typedef struct {
-	uint8_t  shift;     /* Lattice size 2^shift (e.g. 10 = 1024, 3 = 8) */
-	uint16_t amp;       /* Amplitude weight in fixed-point world units */
-	int8_t   skew_x;    /* Domain skew: px = x + y / skew_x (0 = disabled) */
-	int8_t   skew_y;    /* Domain skew: py = y - x / skew_y (0 = disabled) */
-	uint16_t contrast;  /* Fixed-point contrast multiplier (256 = 1.0x, 512 = 2.0x) */
+	uint8_t  shift;        /* Lattice size 2^shift (e.g. 10 = 1024, 3 = 8) */
+	uint16_t amp;          /* Amplitude weight in fixed-point world units */
+	int8_t   skew_x;       /* Domain skew: px = x + y / skew_x (0 = disabled) */
+	int8_t   skew_y;       /* Domain skew: py = y - x / skew_y (0 = disabled) */
+	uint16_t contrast;     /* Fixed-point contrast multiplier (256 = 1.0x, 512 = 2.0x) */
+	uint32_t seed_salt;    /* Optional per-octave seed salt override (0 = use cascade default) */
+	uint8_t  period_shift; /* Optional periodic domain shift 2^period_shift (0 = unbounded) */
 } noise_octave_t;
 
 /* Multi-scale composite cascade */
@@ -951,13 +1101,42 @@ typedef struct {
 	uint32_t seed;
 	uint8_t  count;
 	const noise_octave_t *octaves;
+	uint8_t  vshift;     /* Value bit-shift per octave (0 defaults to NOISE_DEFAULT_VSHIFT = 8) */
+	uint8_t  flags;      /* Sampling flags (0 defaults to NOISE_FADE; NOISE_CASCADE_LINEAR for raw linear) */
+	uint32_t seed_prime; /* Optional per-octave seed prime (0 = CHAFF_SEED_PRIME) */
+	uint32_t seed_salt;  /* Optional per-octave seed salt offset (0 = 1u) */
 } noise_cascade_t;
+
+static inline unsigned
+noise_cascade_vshift(const noise_cascade_t *cfg)
+{
+	return (cfg && cfg->vshift != 0) ? (unsigned)cfg->vshift : NOISE_DEFAULT_VSHIFT;
+}
+
+static inline unsigned
+noise_cascade_flags(const noise_cascade_t *cfg)
+{
+	if (!cfg || cfg->flags == 0)
+		return NOISE_FADE;
+	if (cfg->flags & NOISE_CASCADE_LINEAR)
+		return (unsigned)(cfg->flags & ~NOISE_CASCADE_LINEAR);
+	return (unsigned)cfg->flags;
+}
+
+static inline uint32_t
+noise_cascade_octave_seed(const noise_cascade_t *cfg, const noise_octave_t *oct, uint8_t idx)
+{
+	if (!cfg) return 0;
+	uint32_t prime = cfg->seed_prime ? cfg->seed_prime : CHAFF_SEED_PRIME;
+	uint32_t salt  = (oct && oct->seed_salt) ? oct->seed_salt : (cfg->seed_salt ? cfg->seed_salt : 1u);
+	return cfg->seed ^ (uint32_t)(idx * prime + salt);
+}
 
 /* Corner cache: aliased to noise_wcache_t to eliminate layout drift and type punning */
 typedef noise_wcache_t noise_cache_t;
 
 typedef struct {
-	noise_wcache_t caches[16];
+	noise_wcache_t caches[NOISE_MAX_OCTAVES];
 	const noise_cascade_t *cfg;
 	uint8_t dim;
 	int16_t w;
@@ -970,7 +1149,7 @@ noise_scanline_init(noise_scanline_t *scan, const noise_cascade_t *cfg, uint8_t 
 	memset(scan, 0, sizeof(*scan));
 	scan->cfg = cfg;
 	scan->dim = dim;
-	for (int i = 0; i < 16; i++)
+	for (int i = 0; i < NOISE_MAX_OCTAVES; i++)
 		noise_wcache_init(&scan->caches[i]);
 }
 
@@ -986,11 +1165,15 @@ noise_scanline_eval_row(noise_scanline_t *scan,
 	memset(out_row, 0, count * sizeof(int32_t));
 
 	const noise_cascade_t *cfg = scan->cfg;
-	uint8_t count_oct = cfg->count > 16 ? 16 : cfg->count;
+	uint8_t count_oct = cfg->count > NOISE_MAX_OCTAVES ? NOISE_MAX_OCTAVES : cfg->count;
+	unsigned vshift = noise_cascade_vshift(cfg);
+	unsigned fl = noise_cascade_flags(cfg);
+	int32_t mid = (vshift < 16) ? (int32_t)(1u << (15 - vshift)) : 0;
+	unsigned amp_shift = (vshift < 16) ? (unsigned)(15 - vshift) : 1u;
 
 	for (uint8_t o = 0; o < count_oct; o++) {
 		const noise_octave_t *oct = &cfg->octaves[o];
-		uint32_t oct_seed = cfg->seed ^ (uint32_t)(o * 0x85EBCA77u + 1);
+		uint32_t oct_seed = noise_cascade_octave_seed(cfg, oct, o);
 		noise_wcache_t *c = &scan->caches[o];
 
 		for (size_t i = 0; i < count; i++) {
@@ -1002,18 +1185,18 @@ noise_scanline_eval_row(noise_scanline_t *scan,
 			uint32_t raw;
 			if (scan->dim == 2) {
 				int16_t p[2] = { py, px };
-				raw = noise_wpoint_c(c, p, oct->shift, 8, oct_seed, 2, NOISE_FADE);
+				raw = noise_wpoint_c_periodic(c, p, oct->shift, vshift, oct_seed, 2, fl, oct->period_shift);
 			} else if (scan->dim == 4) {
 				int16_t p[4] = { scan->w, z, py, px };
-				raw = noise_wpoint_c(c, p, oct->shift, 8, oct_seed, 4, NOISE_FADE);
+				raw = noise_wpoint_c_periodic(c, p, oct->shift, vshift, oct_seed, 4, fl, oct->period_shift);
 			} else {
 				int16_t p[3] = { z, py, px };
-				raw = noise_wpoint_c(c, p, oct->shift, 8, oct_seed, 3, NOISE_FADE);
+				raw = noise_wpoint_c_periodic(c, p, oct->shift, vshift, oct_seed, 3, fl, oct->period_shift);
 			}
-			int32_t val = (int32_t)(raw >> 16) - 128;
-			if (oct->contrast != 0 && oct->contrast != 256)
+			int32_t val = (int32_t)(raw >> 16) - mid;
+			if (oct->contrast != 0 && oct->contrast != NOISE_CONTRAST_IDENTITY)
 				val = (val * (int32_t)oct->contrast) >> 8;
-			out_row[i] += (val * (int32_t)oct->amp) >> 7;
+			out_row[i] += (val * (int32_t)oct->amp) >> amp_shift;
 		}
 	}
 }
@@ -1043,18 +1226,22 @@ noise_sample_2d(const noise_cascade_t *cfg, int16_t x, int16_t y)
 {
 	if (!cfg || cfg->count == 0) return 0;
 	int32_t total = 0;
+	unsigned vshift = noise_cascade_vshift(cfg);
+	unsigned fl = noise_cascade_flags(cfg);
+	int32_t mid = (vshift < 16) ? (int32_t)(1u << (15 - vshift)) : 0;
+	unsigned amp_shift = (vshift < 16) ? (unsigned)(15 - vshift) : 1u;
 	for (uint8_t i = 0; i < cfg->count; i++) {
 		const noise_octave_t *oct = &cfg->octaves[i];
-		uint32_t oct_seed = cfg->seed ^ (uint32_t)(i * 0x85EBCA77u + 1);
+		uint32_t oct_seed = noise_cascade_octave_seed(cfg, oct, i);
 		int16_t px = x, py = y;
 		if (oct->skew_x) px = (int16_t)(px + py / oct->skew_x);
 		if (oct->skew_y) py = (int16_t)(py - px / oct->skew_y);
 		int16_t p[2] = { py, px };
-		uint32_t raw = noise_wpoint_n(p, oct->shift, 8, oct_seed, 2, NOISE_FADE);
-		int32_t val = (int32_t)(raw >> 16) - 128;
-		if (oct->contrast != 0 && oct->contrast != 256)
+		uint32_t raw = noise_wpoint_n_periodic(p, oct->shift, vshift, oct_seed, 2, fl, oct->period_shift);
+		int32_t val = (int32_t)(raw >> 16) - mid;
+		if (oct->contrast != 0 && oct->contrast != NOISE_CONTRAST_IDENTITY)
 			val = (val * (int32_t)oct->contrast) >> 8;
-		total += (val * (int32_t)oct->amp) >> 7;
+		total += (val * (int32_t)oct->amp) >> amp_shift;
 	}
 	return total;
 }
@@ -1064,18 +1251,22 @@ noise_sample_3d(const noise_cascade_t *cfg, int16_t x, int16_t y, int16_t z)
 {
 	if (!cfg || cfg->count == 0) return 0;
 	int32_t total = 0;
+	unsigned vshift = noise_cascade_vshift(cfg);
+	unsigned fl = noise_cascade_flags(cfg);
+	int32_t mid = (vshift < 16) ? (int32_t)(1u << (15 - vshift)) : 0;
+	unsigned amp_shift = (vshift < 16) ? (unsigned)(15 - vshift) : 1u;
 	for (uint8_t i = 0; i < cfg->count; i++) {
 		const noise_octave_t *oct = &cfg->octaves[i];
-		uint32_t oct_seed = cfg->seed ^ (uint32_t)(i * 0x85EBCA77u + 1);
+		uint32_t oct_seed = noise_cascade_octave_seed(cfg, oct, i);
 		int16_t px = x, py = y, pz = z;
 		if (oct->skew_x) px = (int16_t)(px + py / oct->skew_x);
 		if (oct->skew_y) py = (int16_t)(py - px / oct->skew_y);
 		int16_t p[3] = { pz, py, px };
-		uint32_t raw = noise_wpoint_n(p, oct->shift, 8, oct_seed, 3, NOISE_FADE);
-		int32_t val = (int32_t)(raw >> 16) - 128;
-		if (oct->contrast != 0 && oct->contrast != 256)
+		uint32_t raw = noise_wpoint_n_periodic(p, oct->shift, vshift, oct_seed, 3, fl, oct->period_shift);
+		int32_t val = (int32_t)(raw >> 16) - mid;
+		if (oct->contrast != 0 && oct->contrast != NOISE_CONTRAST_IDENTITY)
 			val = (val * (int32_t)oct->contrast) >> 8;
-		total += (val * (int32_t)oct->amp) >> 7;
+		total += (val * (int32_t)oct->amp) >> amp_shift;
 	}
 	return total;
 }
@@ -1085,18 +1276,22 @@ noise_sample_4d(const noise_cascade_t *cfg, int16_t x, int16_t y, int16_t z, int
 {
 	if (!cfg || cfg->count == 0) return 0;
 	int32_t total = 0;
+	unsigned vshift = noise_cascade_vshift(cfg);
+	unsigned fl = noise_cascade_flags(cfg);
+	int32_t mid = (vshift < 16) ? (int32_t)(1u << (15 - vshift)) : 0;
+	unsigned amp_shift = (vshift < 16) ? (unsigned)(15 - vshift) : 1u;
 	for (uint8_t i = 0; i < cfg->count; i++) {
 		const noise_octave_t *oct = &cfg->octaves[i];
-		uint32_t oct_seed = cfg->seed ^ (uint32_t)(i * 0x85EBCA77u + 1);
+		uint32_t oct_seed = noise_cascade_octave_seed(cfg, oct, i);
 		int16_t px = x, py = y, pz = z, pw = w;
 		if (oct->skew_x) px = (int16_t)(px + py / oct->skew_x);
 		if (oct->skew_y) py = (int16_t)(py - px / oct->skew_y);
 		int16_t p[4] = { pw, pz, py, px };
-		uint32_t raw = noise_wpoint_n(p, oct->shift, 8, oct_seed, 4, NOISE_FADE);
-		int32_t val = (int32_t)(raw >> 16) - 128;
-		if (oct->contrast != 0 && oct->contrast != 256)
+		uint32_t raw = noise_wpoint_n_periodic(p, oct->shift, vshift, oct_seed, 4, fl, oct->period_shift);
+		int32_t val = (int32_t)(raw >> 16) - mid;
+		if (oct->contrast != 0 && oct->contrast != NOISE_CONTRAST_IDENTITY)
 			val = (val * (int32_t)oct->contrast) >> 8;
-		total += (val * (int32_t)oct->amp) >> 7;
+		total += (val * (int32_t)oct->amp) >> amp_shift;
 	}
 	return total;
 }

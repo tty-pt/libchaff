@@ -1,0 +1,22 @@
+name: ci
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    uses: tty-pt/ci/.github/workflows/all-in-one.yml@main
+    with:
+      name: libchaff
+      run_tests: true
+      publish_to: "deb,apk,rpm,pacman,brew,openbsd,winget"
+      deps_deb: "libxxhash-dev"
+      deps_apk: "xxhash-dev"
+      deps_rpm: "xxhash-devel"
+      deps_pacman: "xxhash"
+      deps_brew: "xxhash"
+      deps_openbsd: "xxhash"
+      deps_winget: "mingw-w64-x86_64-xxhash"
+    secrets: inherit

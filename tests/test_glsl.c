@@ -4,7 +4,7 @@
 #include <string.h>
 #include <assert.h>
 #include <math.h>
-#include <xxhash.h>
+#include <ttypt/noise.h>
 #include <ttypt/chaff_glsl.h>
 
 int main(void)
@@ -25,8 +25,7 @@ int main(void)
 		assert(strstr(src, "chaff_rotate_golden") != NULL);
 		assert(strstr(src, "chaff_eval_multi") != NULL);
 		assert(strstr(src, "chaff_eval_rugged") != NULL);
-		assert(strstr(src, "chaff_water_waves_glsl") != NULL);
-		assert(strstr(src, "chaff_caustics_glsl") != NULL);
+		assert(strstr(src, "chaff_curl_2d") != NULL);
 		printf("PASS: GLSL fragment shader source contains required shader functions and #version 300 es\n");
 	}
 
@@ -164,6 +163,91 @@ int main(void)
 		double angle_deg = angle_rad * (180.0 / 3.141592653589793);
 		assert(fabs(angle_deg - 31.717) < 0.05); /* Exact Golden Ratio angle */
 		printf("PASS: chaff_rotate_golden trigonometric parameters conserve vector length and match 31.72 deg\n");
+	}
+
+	/* 9. Struct-driven chaff_glsl_ref_eval_uniforms and custom vshift _ex evaluators */
+	{
+		chaff_gl_uniforms_t u;
+		memset(&u, 0, sizeof(u));
+		u.origin[0] = 4.0f;
+		u.origin[1] = 8.0f;
+		u.step[0] = 0.5f;
+		u.step[1] = 0.5f;
+		u.seed = 0x13572468u;
+		u.count = 2;
+		u.shifts[0] = 5; u.shifts[1] = 3;
+		u.amps[0] = 80.0f; u.amps[1] = 40.0f;
+		u.min_wavelength = 2.0f;
+
+		float h_def = chaff_glsl_ref_eval_uniforms(&u, 10.0f, 12.0f);
+		u.warp_amp = -1.0f; /* disable domain warp via struct */
+		float h_nowarp = chaff_glsl_ref_eval_uniforms(&u, 10.0f, 12.0f);
+		assert(h_def != h_nowarp);
+
+		/* Custom seed_prime and seed_salt in chaff_gl_uniforms_t */
+		u.seed_prime = 0x27D4EB2Fu;
+		u.seed_salt = 0x1337u;
+		float h_custom_seed = chaff_glsl_ref_eval_uniforms(&u, 10.0f, 12.0f);
+		assert(h_custom_seed != h_nowarp);
+
+		/* Verify shader string exposes parameterized _ex and _full entry points */
+		const char *src = chaff_glsl_fragment_shader_source();
+		assert(strstr(src, "chaff_grad_noise2d_ex") != NULL);
+		assert(strstr(src, "chaff_grad_noise4d_ex") != NULL);
+		assert(strstr(src, "chaff_rotate_2d") != NULL);
+		assert(strstr(src, "chaff_eval_multi_full") != NULL);
+
+		/* Custom vshift = 20 in 3D and 4D _ex reference samplers */
+		chaff_glsl_ref_vec4_t g3_20 = chaff_glsl_ref_sample_grad_3d_ex(12.3f, 8.7f, 4.1f, 4, 20, 0x42u);
+		float s3_20 = chaff_glsl_ref_sample_3d_ex(12.3f, 8.7f, 4.1f, 4, 20, 0x42u);
+		assert(fabsf(g3_20.val - s3_20) < 1e-6f);
+		assert(s3_20 >= 0.0f && s3_20 <= 1.0f);
+
+		chaff_glsl_ref_vec5_t g4_20 = chaff_glsl_ref_sample_grad_4d_ex(12.3f, 8.7f, 4.1f, 2.5f, 4, 20, 0x42u);
+		float s4_20 = chaff_glsl_ref_sample_4d_ex(12.3f, 8.7f, 4.1f, 2.5f, 4, 20, 0x42u);
+		assert(fabsf(g4_20.val - s4_20) < 1e-6f);
+		assert(s4_20 >= 0.0f && s4_20 <= 1.0f);
+		printf("PASS: chaff_glsl_ref_eval_uniforms and custom vshift 3D/4D _ex samplers verified\n");
+	}
+
+	/* 10. Analytical 2D value-gradient noise (chaff_value_grad_noise2d) and scale-space band weights */
+	{
+		const char *src = chaff_glsl_fragment_shader_source();
+		assert(strstr(src, "chaff_value_grad_noise2d") != NULL);
+		assert(strstr(src, "chaff_lowpass_weight") != NULL);
+		assert(strstr(src, "chaff_band_weight") != NULL);
+
+		uint32_t seed = 0x9E3779B9u;
+		float eps = 0.002f;
+		for (float y = -7.3f; y <= 12.7f; y += 3.1f) {
+			for (float x = -5.4f; x <= 14.6f; x += 2.9f) {
+				float val = 0.0f, gx = 0.0f, gy = 0.0f;
+				chaff_glsl_ref_value_grad_noise2d(x, y, seed, &val, &gx, &gy);
+				assert(val >= 0.0f && val <= 1.0f);
+
+				float v_xp = 0.0f, v_xm = 0.0f, v_yp = 0.0f, v_ym = 0.0f;
+				chaff_glsl_ref_value_grad_noise2d(x + eps, y, seed, &v_xp, NULL, NULL);
+				chaff_glsl_ref_value_grad_noise2d(x - eps, y, seed, &v_xm, NULL, NULL);
+				chaff_glsl_ref_value_grad_noise2d(x, y + eps, seed, &v_yp, NULL, NULL);
+				chaff_glsl_ref_value_grad_noise2d(x, y - eps, seed, &v_ym, NULL, NULL);
+
+				float num_gx = (v_xp - v_xm) / (2.0f * eps);
+				float num_gy = (v_yp - v_ym) / (2.0f * eps);
+				assert(fabsf(gx - num_gx) < 0.01f);
+				assert(fabsf(gy - num_gy) < 0.01f);
+			}
+		}
+
+		/* Verify complementary band-pass partition of unity: L(wl, coarse) + B(wl, 0, coarse) == 1.0 */
+		for (float coarse_step = 0.5f; coarse_step <= 64.0f; coarse_step *= 1.7f) {
+			for (int s = 0; s <= 10; s++) {
+				float wl = (float)(1 << s);
+				float w_low = chaff_glsl_ref_lowpass_weight(wl, coarse_step);
+				float w_band = chaff_glsl_ref_band_weight(wl, 0.0f, coarse_step);
+				assert(fabsf((w_low + w_band) - 1.0f) < 1e-6f);
+			}
+		}
+		printf("PASS: chaff_value_grad_noise2d analytical derivatives and chaff_band_weight verified\n");
 	}
 
 	printf("=== ALL GLSL GPU SHADER TESTS PASSED ===\n");

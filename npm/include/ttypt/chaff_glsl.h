@@ -66,6 +66,10 @@
 	"    return h;\n" \
 	"}\n"
 
+#define CHAFF_GLSL_GRAD2D_NORM 0.70710678f
+#define CHAFF_GLSL_GRAD4D_NORM 0.72f
+#define CHAFF_GLSL_DEFAULT_RIDGE_OCTAVE_STEP 0.25f
+
 /* Continuous C2-quintic 2D and 4D gradient noise with analytical spatial derivatives.
  * Loop-free explicit corner evaluations for consumer GPU shader compiler friendliness. */
 #define CHAFF_GLSL_GRAD_NOISE_FN \
@@ -76,7 +80,8 @@
 	"    vec2 g = vec2(gx, gy);\n" \
 	"    return g * inversesqrt(dot(g, g) + 1e-6);\n" \
 	"}\n" \
-	"vec3 chaff_grad_noise2d(vec2 p, uint seed) {\n" \
+	"vec3 chaff_grad_noise2d_ex(vec2 p, uint seed, float grad_norm) {\n" \
+	"    float gn = (grad_norm > 0.0) ? grad_norm : 0.70710678;\n" \
 	"    vec2 ip = floor(p);\n" \
 	"    vec2 fp = p - ip;\n" \
 	"    vec2 u = fp * fp * fp * (fp * (fp * 6.0 - 15.0) + 10.0);\n" \
@@ -93,10 +98,13 @@
 	"    float k0 = v10 - v00;\n" \
 	"    float k1 = v01 - v00;\n" \
 	"    float k2 = v11 - v01 - k0;\n" \
-	"    float val = 0.5 + 0.70710678 * (v00 + k0 * u.x + k1 * u.y + k2 * u.x * u.y);\n" \
+	"    float val = 0.5 + gn * (v00 + k0 * u.x + k1 * u.y + k2 * u.x * u.y);\n" \
 	"    vec2 gInterp = g00 + (g10 - g00) * u.x + (g01 - g00) * u.y + (g11 - g01 - g10 + g00) * (u.x * u.y);\n" \
-	"    vec2 grad = 0.70710678 * (gInterp + du * vec2(k0 + k2 * u.y, k1 + k2 * u.x));\n" \
+	"    vec2 grad = gn * (gInterp + du * vec2(k0 + k2 * u.y, k1 + k2 * u.x));\n" \
 	"    return vec3(clamp(val, 0.0, 1.0), grad.x, grad.y);\n" \
+	"}\n" \
+	"vec3 chaff_grad_noise2d(vec2 p, uint seed) {\n" \
+	"    return chaff_grad_noise2d_ex(p, seed, 0.70710678);\n" \
 	"}\n" \
 	"vec4 chaff_grad4(ivec4 c, uint seed) {\n" \
 	"    uint h = chaff_hash4(c, seed);\n" \
@@ -111,7 +119,8 @@
 	"float chaff_grad4_dot(ivec4 c, vec4 d, uint seed) {\n" \
 	"    return dot(chaff_grad4(c, seed), d);\n" \
 	"}\n" \
-	"vec4 chaff_grad_noise4d(vec4 p, uint seed) {\n" \
+	"vec4 chaff_grad_noise4d_ex(vec4 p, uint seed, float grad_norm) {\n" \
+	"    float gn = (grad_norm > 0.0) ? grad_norm : 0.72;\n" \
 	"    vec4 ip = floor(p);\n" \
 	"    vec4 fp = p - ip;\n" \
 	"    vec4 u = fp * fp * fp * (fp * (fp * 6.0 - 15.0) + 10.0);\n" \
@@ -131,61 +140,57 @@
 	"    float c3 = mix(d3, d7, u.z);\n" \
 	"    float b0 = mix(c0, c2, u.y);\n" \
 	"    float b1 = mix(c1, c3, u.y);\n" \
-	"    float val = clamp(0.5 + 0.72 * mix(b0, b1, u.x), 0.0, 1.0);\n" \
-	"    float dN_dx = (b1 - b0) * du.x * 0.72;\n" \
-	"    float dN_dy = mix(c2 - c0, c3 - c1, u.x) * du.y * 0.72;\n" \
+	"    float val = clamp(0.5 + gn * mix(b0, b1, u.x), 0.0, 1.0);\n" \
+	"    float dN_dx = (b1 - b0) * du.x * gn;\n" \
+	"    float dN_dy = mix(c2 - c0, c3 - c1, u.x) * du.y * gn;\n" \
 	"    float dz0 = mix(d4 - d0, d6 - d2, u.y);\n" \
 	"    float dz1 = mix(d5 - d1, d7 - d3, u.y);\n" \
-	"    float dN_dz = mix(dz0, dz1, u.x) * du.z * 0.72;\n" \
+	"    float dN_dz = mix(dz0, dz1, u.x) * du.z * gn;\n" \
 	"    return vec4(val, dN_dx, dN_dy, dN_dz);\n" \
+	"}\n" \
+	"vec4 chaff_grad_noise4d(vec4 p, uint seed) {\n" \
+	"    return chaff_grad_noise4d_ex(p, seed, 0.72);\n" \
+	"}\n" \
+	"vec2 chaff_curl_2d(vec2 p, uint seed) {\n" \
+	"    vec3 n = chaff_grad_noise2d(p, seed);\n" \
+	"    return vec2(-n.z, n.y);\n" \
+	"}\n" \
+	"vec3 chaff_value_grad_noise2d(vec2 p, uint seed) {\n" \
+	"    vec2 ip = floor(p);\n" \
+	"    vec2 fp = p - ip;\n" \
+	"    vec2 u = fp * fp * fp * (fp * (fp * 6.0 - 15.0) + 10.0);\n" \
+	"    vec2 du = 30.0 * fp * fp * (fp * (fp - 2.0) + 1.0);\n" \
+	"    ivec2 c = ivec2(ip);\n" \
+	"    float v00 = float(chaff_hash2(c, seed) >> 8u) * (1.0 / 16777215.0);\n" \
+	"    float v10 = float(chaff_hash2(c + ivec2(1, 0), seed) >> 8u) * (1.0 / 16777215.0);\n" \
+	"    float v01 = float(chaff_hash2(c + ivec2(0, 1), seed) >> 8u) * (1.0 / 16777215.0);\n" \
+	"    float v11 = float(chaff_hash2(c + ivec2(1, 1), seed) >> 8u) * (1.0 / 16777215.0);\n" \
+	"    float k0 = v10 - v00;\n" \
+	"    float k1 = v01 - v00;\n" \
+	"    float k2 = v11 - v01 - k0;\n" \
+	"    float val = v00 + k0 * u.x + k1 * u.y + k2 * u.x * u.y;\n" \
+	"    vec2 grad = du * vec2(k0 + k2 * u.y, k1 + k2 * u.x);\n" \
+	"    return vec3(val, grad.x, grad.y);\n" \
 	"}\n"
 
-/* Canonical 3-octave divergence-free recursive curl-flow field in GLSL.
- * Evaluates synoptic flow -> meso gusts -> micro eddies with optional Nyquist/distance band weights. */
-#define CHAFF_GLSL_FLOW_FN \
-	"vec4 chaff_eval_flow_2d_banded(vec2 worldPos, float anim_time, vec3 band_weights) {\n" \
-	"    const mat2 rot  = mat2(0.8, -0.6, 0.6, 0.8);\n" \
-	"    const mat2 irot = mat2(0.8,  0.6, -0.6, 0.8);\n" \
-	"    const vec2 dir0 = vec2(0.741, -0.671);\n" \
-	"    const vec2 dir1 = vec2(0.822, -0.569);\n" \
-	"    const vec2 dir2 = vec2(0.640, -0.768);\n" \
-	"    float w0_nyq = band_weights.x;\n" \
-	"    float w1_nyq = band_weights.y;\n" \
-	"    float w2_nyq = band_weights.z;\n" \
-	"    if (w0_nyq <= 0.001) return vec4(dir0.x, dir0.y, 0.65, 0.0);\n" \
-	"    float t0 = mod(anim_time * 0.05, 1024.0);\n" \
-	"    vec2 p0 = worldPos * 0.0055 - dir0 * t0;\n" \
-	"    vec3 w0 = chaff_grad_noise2d(p0, 0x57494E44u);\n" \
-	"    vec2 baseWind = normalize(dir0 + vec2(-w0.z, w0.y) * (0.28 * w0_nyq));\n" \
-	"    vec3 w1 = vec3(0.5, 0.0, 0.0);\n" \
-	"    vec2 localWind1 = baseWind;\n" \
-	"    if (w1_nyq > 0.001) {\n" \
-	"        float t1 = mod(anim_time * 0.12, 1024.0);\n" \
-	"        vec2 p1 = rot * (worldPos * 0.028 + w0.yz * 0.65) - dir1 * t1;\n" \
-	"        w1 = chaff_grad_noise2d(p1, 0x47555354u);\n" \
-	"        vec2 mesoGrad = irot * w1.yz;\n" \
-	"        localWind1 = normalize(baseWind + vec2(-mesoGrad.y, mesoGrad.x) * (0.22 * w1_nyq));\n" \
-	"    }\n" \
-	"    vec3 w2 = vec3(0.5, 0.0, 0.0);\n" \
-	"    vec2 windDir = localWind1;\n" \
-	"    if (w2_nyq > 0.001) {\n" \
-	"        float t2 = mod(anim_time * 0.22, 1024.0);\n" \
-	"        vec2 p2 = rot * (rot * (worldPos * 0.120) + w0.yz * 0.45 + w1.yz * 0.55) - dir2 * t2;\n" \
-	"        w2 = chaff_grad_noise2d(p2, 0x45444459u);\n" \
-	"        vec2 microGrad = (irot * irot) * w2.yz;\n" \
-	"        windDir = normalize(localWind1 + vec2(-microGrad.y, microGrad.x) * (0.16 * w2_nyq));\n" \
-	"    }\n" \
-	"    float gustEnv = clamp(0.65 + 0.45 * (w0.x - 0.5) * w0_nyq + 0.55 * (w1.x - 0.38) * w1_nyq + 0.30 * (w2.x - 0.42) * w2_nyq, 0.25, 1.35);\n" \
-	"    float catspaw = smoothstep(0.38, 0.76, w1.x * 0.62 + w2.x * 0.38) * w1_nyq;\n" \
-	"    return vec4(windDir.x, windDir.y, gustEnv, catspaw);\n" \
+/* Continuous scale-space C2 Nyquist low-pass and complementary band-pass weights */
+#define CHAFF_GLSL_BAND_FN \
+	"float chaff_lowpass_weight(float wavelength, float step_wu) {\n" \
+	"    if (step_wu <= 0.0) return 1.0;\n" \
+	"    float t = clamp((wavelength - 2.0 * step_wu) / (2.0 * step_wu), 0.0, 1.0);\n" \
+	"    return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);\n" \
 	"}\n" \
-	"vec4 chaff_eval_flow_2d(vec2 worldPos, float anim_time) {\n" \
-	"    return chaff_eval_flow_2d_banded(worldPos, anim_time, vec3(1.0, 1.0, 1.0));\n" \
+	"float chaff_band_weight(float wavelength, float fine_step_wu, float coarse_step_wu) {\n" \
+	"    float w_fine = chaff_lowpass_weight(wavelength, fine_step_wu);\n" \
+	"    if (w_fine <= 0.0) return 0.0;\n" \
+	"    float w_coarse = chaff_lowpass_weight(wavelength, coarse_step_wu);\n" \
+	"    return w_fine * (1.0 - w_coarse);\n" \
 	"}\n"
 
 /* Continuous cubic Hermite interpolation matching noise_wcorners and noise_wstep.
  * Evaluates corner vertices at cell = floor(world_pos / 2^shift) * 2^shift. */
 #define CHAFF_GLSL_EVAL_FN \
+	CHAFF_GLSL_BAND_FN \
 	"float chaff_sample_octave(vec2 world_pos, uint shift, uint vshift, uint seed) {\n" \
 	"    float cell_size = float(1u << shift);\n" \
 	"    vec2 p = world_pos / cell_size;\n" \
@@ -215,15 +220,16 @@
 	"    float v10 = float(chaff_hash2(cell + ivec2(step_px, 0), seed) >> vshift);\n" \
 	"    float v01 = float(chaff_hash2(cell + ivec2(0, step_px), seed) >> vshift);\n" \
 	"    float v11 = float(chaff_hash2(cell + ivec2(step_px, step_px), seed) >> vshift);\n" \
+	"    float norm = float((1u << (32u - vshift)) - 1u);\n" \
 	"    float b0 = mix(v00, v10, u.x);\n" \
 	"    float b1 = mix(v01, v11, u.x);\n" \
-	"    float val = mix(b0, b1, u.y) / 255.0;\n" \
+	"    float val = mix(b0, b1, u.y) / norm;\n" \
 	"    float dH_dx = mix(v10 - v00, v11 - v01, u.y);\n" \
 	"    float dH_dy = b1 - b0;\n" \
-	"    vec2 grad = (vec2(dH_dx, dH_dy) * du) / (255.0 * cell_size);\n" \
+	"    vec2 grad = (vec2(dH_dx, dH_dy) * du) / (norm * cell_size);\n" \
 	"    return vec3(val, grad.x, grad.y);\n" \
 	"}\n" \
-	"float chaff_sample_3d(vec3 pos, uint shift, uint seed) {\n" \
+	"float chaff_sample_3d_ex(vec3 pos, uint shift, uint vshift, uint seed) {\n" \
 	"    float cell_size = float(1u << shift);\n" \
 	"    vec3 p = pos / cell_size;\n" \
 	"    ivec3 i0 = ivec3(floor(p));\n" \
@@ -231,23 +237,27 @@
 	"    vec3 u = f * f * (3.0 - 2.0 * f);\n" \
 	"    int step_px = int(1u << shift);\n" \
 	"    ivec3 cell = i0 * step_px;\n" \
-	"    uint v000 = chaff_hash3(cell + ivec3(0, 0, 0), seed) >> 24u;\n" \
-	"    uint v100 = chaff_hash3(cell + ivec3(step_px, 0, 0), seed) >> 24u;\n" \
-	"    uint v010 = chaff_hash3(cell + ivec3(0, step_px, 0), seed) >> 24u;\n" \
-	"    uint v110 = chaff_hash3(cell + ivec3(step_px, step_px, 0), seed) >> 24u;\n" \
-	"    uint v001 = chaff_hash3(cell + ivec3(0, 0, step_px), seed) >> 24u;\n" \
-	"    uint v101 = chaff_hash3(cell + ivec3(step_px, 0, step_px), seed) >> 24u;\n" \
-	"    uint v011 = chaff_hash3(cell + ivec3(0, step_px, step_px), seed) >> 24u;\n" \
-	"    uint v111 = chaff_hash3(cell + ivec3(step_px, step_px, step_px), seed) >> 24u;\n" \
+	"    uint v000 = chaff_hash3(cell + ivec3(0, 0, 0), seed) >> vshift;\n" \
+	"    uint v100 = chaff_hash3(cell + ivec3(step_px, 0, 0), seed) >> vshift;\n" \
+	"    uint v010 = chaff_hash3(cell + ivec3(0, step_px, 0), seed) >> vshift;\n" \
+	"    uint v110 = chaff_hash3(cell + ivec3(step_px, step_px, 0), seed) >> vshift;\n" \
+	"    uint v001 = chaff_hash3(cell + ivec3(0, 0, step_px), seed) >> vshift;\n" \
+	"    uint v101 = chaff_hash3(cell + ivec3(step_px, 0, step_px), seed) >> vshift;\n" \
+	"    uint v011 = chaff_hash3(cell + ivec3(0, step_px, step_px), seed) >> vshift;\n" \
+	"    uint v111 = chaff_hash3(cell + ivec3(step_px, step_px, step_px), seed) >> vshift;\n" \
 	"    float b00 = mix(float(v000), float(v100), u.x);\n" \
 	"    float b10 = mix(float(v010), float(v110), u.x);\n" \
 	"    float b01 = mix(float(v001), float(v101), u.x);\n" \
 	"    float b11 = mix(float(v011), float(v111), u.x);\n" \
 	"    float b0 = mix(b00, b10, u.y);\n" \
 	"    float b1 = mix(b01, b11, u.y);\n" \
-	"    return mix(b0, b1, u.z) / 255.0;\n" \
+	"    float norm = float((1u << (32u - vshift)) - 1u);\n" \
+	"    return mix(b0, b1, u.z) / norm;\n" \
 	"}\n" \
-	"vec4 chaff_sample_grad_3d(vec3 pos, uint shift, uint seed) {\n" \
+	"float chaff_sample_3d(vec3 pos, uint shift, uint seed) {\n" \
+	"    return chaff_sample_3d_ex(pos, shift, 24u, seed);\n" \
+	"}\n" \
+	"vec4 chaff_sample_grad_3d_ex(vec3 pos, uint shift, uint vshift, uint seed) {\n" \
 	"    float cell_size = float(1u << shift);\n" \
 	"    vec3 p = pos / cell_size;\n" \
 	"    ivec3 i0 = ivec3(floor(p));\n" \
@@ -256,21 +266,22 @@
 	"    vec3 du = 6.0 * f * (1.0 - f);\n" \
 	"    int step_px = int(1u << shift);\n" \
 	"    ivec3 cell = i0 * step_px;\n" \
-	"    float v000 = float(chaff_hash3(cell + ivec3(0, 0, 0), seed) >> 24u);\n" \
-	"    float v100 = float(chaff_hash3(cell + ivec3(step_px, 0, 0), seed) >> 24u);\n" \
-	"    float v010 = float(chaff_hash3(cell + ivec3(0, step_px, 0), seed) >> 24u);\n" \
-	"    float v110 = float(chaff_hash3(cell + ivec3(step_px, step_px, 0), seed) >> 24u);\n" \
-	"    float v001 = float(chaff_hash3(cell + ivec3(0, 0, step_px), seed) >> 24u);\n" \
-	"    float v101 = float(chaff_hash3(cell + ivec3(step_px, 0, step_px), seed) >> 24u);\n" \
-	"    float v011 = float(chaff_hash3(cell + ivec3(0, step_px, step_px), seed) >> 24u);\n" \
-	"    float v111 = float(chaff_hash3(cell + ivec3(step_px, step_px, step_px), seed) >> 24u);\n" \
+	"    float v000 = float(chaff_hash3(cell + ivec3(0, 0, 0), seed) >> vshift);\n" \
+	"    float v100 = float(chaff_hash3(cell + ivec3(step_px, 0, 0), seed) >> vshift);\n" \
+	"    float v010 = float(chaff_hash3(cell + ivec3(0, step_px, 0), seed) >> vshift);\n" \
+	"    float v110 = float(chaff_hash3(cell + ivec3(step_px, step_px, 0), seed) >> vshift);\n" \
+	"    float v001 = float(chaff_hash3(cell + ivec3(0, 0, step_px), seed) >> vshift);\n" \
+	"    float v101 = float(chaff_hash3(cell + ivec3(step_px, 0, step_px), seed) >> vshift);\n" \
+	"    float v011 = float(chaff_hash3(cell + ivec3(0, step_px, step_px), seed) >> vshift);\n" \
+	"    float v111 = float(chaff_hash3(cell + ivec3(step_px, step_px, step_px), seed) >> vshift);\n" \
+	"    float norm = float((1u << (32u - vshift)) - 1u);\n" \
 	"    float b00 = mix(v000, v100, u.x);\n" \
 	"    float b10 = mix(v010, v110, u.x);\n" \
 	"    float b01 = mix(v001, v101, u.x);\n" \
 	"    float b11 = mix(v011, v111, u.x);\n" \
 	"    float b0 = mix(b00, b10, u.y);\n" \
 	"    float b1 = mix(b01, b11, u.y);\n" \
-	"    float val = mix(b0, b1, u.z) / 255.0;\n" \
+	"    float val = mix(b0, b1, u.z) / norm;\n" \
 	"    float dx00 = v100 - v000;\n" \
 	"    float dx10 = v110 - v010;\n" \
 	"    float dx01 = v101 - v001;\n" \
@@ -282,10 +293,13 @@
 	"    float dy1 = b11 - b01;\n" \
 	"    float dN_dy = mix(dy0, dy1, u.z);\n" \
 	"    float dN_dz = b1 - b0;\n" \
-	"    vec3 grad = (vec3(dN_dx, dN_dy, dN_dz) * du) / (255.0 * cell_size);\n" \
+	"    vec3 grad = (vec3(dN_dx, dN_dy, dN_dz) * du) / (norm * cell_size);\n" \
 	"    return vec4(val, grad.x, grad.y, grad.z);\n" \
 	"}\n" \
-	"float chaff_sample_4d(vec4 pos, uint shift, uint seed) {\n" \
+	"vec4 chaff_sample_grad_3d(vec3 pos, uint shift, uint seed) {\n" \
+	"    return chaff_sample_grad_3d_ex(pos, shift, 24u, seed);\n" \
+	"}\n" \
+	"float chaff_sample_4d_ex(vec4 pos, uint shift, uint vshift, uint seed) {\n" \
 	"    float cell_size = float(1u << shift);\n" \
 	"    vec4 p = pos / cell_size;\n" \
 	"    ivec4 i0 = ivec4(floor(p));\n" \
@@ -298,8 +312,8 @@
 	"        int ox = (i & 1) != 0 ? step_px : 0;\n" \
 	"        int oy = (i & 2) != 0 ? step_px : 0;\n" \
 	"        int oz = (i & 4) != 0 ? step_px : 0;\n" \
-	"        float v0 = float(chaff_hash4(cell + ivec4(ox, oy, oz, 0), seed) >> 24u);\n" \
-	"        float v1 = float(chaff_hash4(cell + ivec4(ox, oy, oz, step_px), seed) >> 24u);\n" \
+	"        float v0 = float(chaff_hash4(cell + ivec4(ox, oy, oz, 0), seed) >> vshift);\n" \
+	"        float v1 = float(chaff_hash4(cell + ivec4(ox, oy, oz, step_px), seed) >> vshift);\n" \
 	"        d[i] = mix(v0, v1, u.w);\n" \
 	"    }\n" \
 	"    float c0 = mix(d[0], d[4], u.z);\n" \
@@ -308,9 +322,13 @@
 	"    float c3 = mix(d[3], d[7], u.z);\n" \
 	"    float b0 = mix(c0, c2, u.y);\n" \
 	"    float b1 = mix(c1, c3, u.y);\n" \
-	"    return mix(b0, b1, u.x) / 255.0;\n" \
+	"    float norm = float((1u << (32u - vshift)) - 1u);\n" \
+	"    return mix(b0, b1, u.x) / norm;\n" \
 	"}\n" \
-	"vec4 chaff_sample_grad_4d(vec4 pos, uint shift, uint seed, out float out_grad_w) {\n" \
+	"float chaff_sample_4d(vec4 pos, uint shift, uint seed) {\n" \
+	"    return chaff_sample_4d_ex(pos, shift, 24u, seed);\n" \
+	"}\n" \
+	"vec4 chaff_sample_grad_4d_ex(vec4 pos, uint shift, uint vshift, uint seed, out float out_grad_w) {\n" \
 	"    float cell_size = float(1u << shift);\n" \
 	"    vec4 p = pos / cell_size;\n" \
 	"    ivec4 i0 = ivec4(floor(p));\n" \
@@ -325,18 +343,19 @@
 	"        int ox = (i & 1) != 0 ? step_px : 0;\n" \
 	"        int oy = (i & 2) != 0 ? step_px : 0;\n" \
 	"        int oz = (i & 4) != 0 ? step_px : 0;\n" \
-	"        float v0 = float(chaff_hash4(cell + ivec4(ox, oy, oz, 0), seed) >> 24u);\n" \
-	"        float v1 = float(chaff_hash4(cell + ivec4(ox, oy, oz, step_px), seed) >> 24u);\n" \
+	"        float v0 = float(chaff_hash4(cell + ivec4(ox, oy, oz, 0), seed) >> vshift);\n" \
+	"        float v1 = float(chaff_hash4(cell + ivec4(ox, oy, oz, step_px), seed) >> vshift);\n" \
 	"        dw_c[i] = v1 - v0;\n" \
 	"        d[i] = mix(v0, v1, u.w);\n" \
 	"    }\n" \
+	"    float norm = float((1u << (32u - vshift)) - 1u);\n" \
 	"    float c0 = mix(d[0], d[4], u.z);\n" \
 	"    float c1 = mix(d[1], d[5], u.z);\n" \
 	"    float c2 = mix(d[2], d[6], u.z);\n" \
 	"    float c3 = mix(d[3], d[7], u.z);\n" \
 	"    float b0 = mix(c0, c2, u.y);\n" \
 	"    float b1 = mix(c1, c3, u.y);\n" \
-	"    float val = mix(b0, b1, u.x) / 255.0;\n" \
+	"    float val = mix(b0, b1, u.x) / norm;\n" \
 	"    float dN_dx = b1 - b0;\n" \
 	"    float dN_dy = mix(c2 - c0, c3 - c1, u.x);\n" \
 	"    float dz0 = mix(d[4] - d[0], d[6] - d[2], u.y);\n" \
@@ -349,53 +368,62 @@
 	"    float dw_y0 = mix(dw0, dw2, u.y);\n" \
 	"    float dw_y1 = mix(dw1, dw3, u.y);\n" \
 	"    float dN_dw = mix(dw_y0, dw_y1, u.x);\n" \
-	"    float scale = 1.0 / (255.0 * cell_size);\n" \
+	"    float scale = 1.0 / (norm * cell_size);\n" \
 	"    out_grad_w = (dN_dw * du.w) * scale;\n" \
 	"    return vec4(val, (dN_dx * du.x) * scale, (dN_dy * du.y) * scale, (dN_dz * du.z) * scale);\n" \
+	"}\n" \
+	"vec4 chaff_sample_grad_4d(vec4 pos, uint shift, uint seed, out float out_grad_w) {\n" \
+	"    return chaff_sample_grad_4d_ex(pos, shift, 24u, seed, out_grad_w);\n" \
 	"}\n"
 
 #define CHAFF_GLSL_EVAL_MULTI_FN \
-	"vec2 chaff_rotate_golden(vec2 p) {\n" \
-	"    return vec2(0.8506508 * p.x - 0.5257311 * p.y, 0.5257311 * p.x + 0.8506508 * p.y);\n" \
+	"vec2 chaff_rotate_2d(vec2 p, vec2 rot_cs) {\n" \
+	"    return vec2(rot_cs.x * p.x - rot_cs.y * p.y, rot_cs.y * p.x + rot_cs.x * p.y);\n" \
 	"}\n" \
-	"float chaff_eval_multi(vec2 world_pos, uint seed, uint count, uint shifts[8], float amps[8], float min_wavelength) {\n" \
-	"    float total_elevation = 0.0;\n" \
-	"    float warp_raw = chaff_sample_octave(world_pos * 0.0625, 5u, 8u, seed ^ 0x57415250u);\n" \
-	"    float warp_val = (warp_raw / 65536.0) - 128.0;\n" \
-	"    vec2 cur_p = world_pos + vec2(warp_val * (6.0 / 128.0), -warp_val * (6.0 / 128.0));\n" \
+	"vec2 chaff_rotate_golden(vec2 p) {\n" \
+	"    return chaff_rotate_2d(p, vec2(0.8506508, 0.5257311));\n" \
+	"}\n" \
+	"float chaff_eval_multi_full(vec2 world_pos, uint seed, uint count, uint shifts[8], float amps[8],\n" \
+	"                            float min_wavelength, uint vshift, uint seed_prime, uint seed_salt,\n" \
+	"                            float warp_freq, uint warp_shift, float warp_amp, uint warp_salt, vec2 rot_cs) {\n" \
+	"    uint vs = (vshift > 0u && vshift < 32u) ? vshift : 8u;\n" \
+	"    float half_range = max(float(1u << (31u - vs)) / 65536.0, 1.0);\n" \
+	"    uint prime = (seed_prime != 0u) ? seed_prime : 0x85EBCA77u;\n" \
+	"    uint salt = (seed_salt != 0u) ? seed_salt : 1u;\n" \
+	"    vec2 rcs = (rot_cs.x == 0.0 && rot_cs.y == 0.0) ? vec2(0.8506508, 0.5257311) : rot_cs;\n" \
+	"    float total_val = 0.0;\n" \
+	"    vec2 cur_p = world_pos;\n" \
+	"    if (warp_amp > 0.0) {\n" \
+	"        float wfreq = (warp_freq > 0.0) ? warp_freq : 0.0625;\n" \
+	"        uint wshift = (warp_shift > 0u) ? warp_shift : 5u;\n" \
+	"        uint wsalt = (warp_salt != 0u) ? warp_salt : 0x9E3779B9u;\n" \
+	"        float warp_raw = chaff_sample_octave(world_pos * wfreq, wshift, vs, seed ^ wsalt);\n" \
+	"        float warp_val = (warp_raw / 65536.0) - half_range;\n" \
+	"        float d = warp_val * (warp_amp / half_range);\n" \
+	"        cur_p += vec2(d, -d);\n" \
+	"    }\n" \
 	"    for (uint i = 0u; i < count && i < 8u; i++) {\n" \
 	"        float wavelength = float(1u << shifts[i]);\n" \
 	"        if (wavelength < min_wavelength) continue;\n" \
-	"        uint oct_seed = seed ^ (i * 0x85EBCA77u + 1u);\n" \
-	"        float raw = chaff_sample_octave(cur_p, shifts[i], 8u, oct_seed);\n" \
-	"        float val = (raw / 65536.0) - 128.0;\n" \
-	"        total_elevation += val * (amps[i] / 128.0);\n" \
-	"        cur_p = chaff_rotate_golden(cur_p);\n" \
+	"        uint oct_seed = seed ^ (i * prime + salt);\n" \
+	"        float raw = chaff_sample_octave(cur_p, shifts[i], vs, oct_seed);\n" \
+	"        float val = (raw / 65536.0) - half_range;\n" \
+	"        total_val += val * (amps[i] / half_range);\n" \
+	"        cur_p = chaff_rotate_2d(cur_p, rcs);\n" \
 	"    }\n" \
-	"    return total_elevation;\n" \
+	"    return total_val;\n" \
+	"}\n" \
+	"float chaff_eval_multi_ex(vec2 world_pos, uint seed, uint count, uint shifts[8], float amps[8],\n" \
+	"                          float min_wavelength, float warp_freq, uint warp_shift, float warp_amp, uint warp_salt) {\n" \
+	"    return chaff_eval_multi_full(world_pos, seed, count, shifts, amps, min_wavelength,\n" \
+	"                                 8u, 0x85EBCA77u, 1u, warp_freq, warp_shift, warp_amp, warp_salt,\n" \
+	"                                 vec2(0.8506508, 0.5257311));\n" \
+	"}\n" \
+	"float chaff_eval_multi(vec2 world_pos, uint seed, uint count, uint shifts[8], float amps[8], float min_wavelength) {\n" \
+	"    return chaff_eval_multi_ex(world_pos, seed, count, shifts, amps, min_wavelength, 0.0625, 5u, 6.0, 0x9E3779B9u);\n" \
 	"}\n" \
 	"float chaff_eval_rugged(vec2 world_pos, uint seed, uint count, uint shifts[8], float amps[8], float min_wavelength) {\n" \
 	"    return chaff_eval_multi(world_pos, seed, count, shifts, amps, min_wavelength);\n" \
-	"}\n"
-
-#define CHAFF_GLSL_WATER_FN \
-	"vec4 chaff_water_waves_glsl(vec2 world_pos, float anim_time) {\n" \
-	"    vec2 wind = vec2(0.7071, -0.7071);\n" \
-	"    vec2 pMacro = world_pos * 0.035 - wind * (anim_time * 0.8);\n" \
-	"    vec2 pMid   = chaff_rotate_golden(world_pos * 0.12) + vec2(0.5, 0.866) * (anim_time * 1.6);\n" \
-	"    vec2 pCap   = world_pos * 0.45 - wind * (anim_time * 3.5);\n" \
-	"    vec4 sMacro = chaff_sample_grad_3d(vec3(pMacro * 8.0, anim_time * 1.2), 6u, 0x5357u);\n" \
-	"    vec4 sMid   = chaff_sample_grad_3d(vec3(pMid * 8.0, anim_time * 2.2), 4u, 0xCAFEu);\n" \
-	"    vec3 sCap   = chaff_sample_grad_2d(pCap, 2u, 24u, 0xC491u);\n" \
-	"    vec2 waveGrad = sMacro.yz * 4.32 + sMid.yz * 4.48 + sCap.yz * 0.42;\n" \
-	"    vec3 waveNormal = normalize(vec3(-waveGrad.x, -waveGrad.y, 1.0));\n" \
-	"    float waveHeight = sMacro.x * 2.0 + sMid.x * 0.8 + sCap.x * 0.2;\n" \
-	"    return vec4(waveHeight, waveNormal.x, waveNormal.y, waveNormal.z);\n" \
-	"}\n" \
-	"float chaff_caustics_glsl(vec2 world_pos, float anim_time) {\n" \
-	"    float c1 = chaff_sample_octave(world_pos * 0.5 + vec2(anim_time * 0.2), 3u, 24u, 0xCA11u);\n" \
-	"    float c2 = chaff_sample_octave(world_pos * 0.5 - vec2(anim_time * 0.15), 3u, 24u, 0xCA22u);\n" \
-	"    return pow(min(c1, c2) / 255.0, 2.0) * 2.5;\n" \
 	"}\n"
 
 #define CHAFF_GLSL_FULLSCREEN_FRAG \
@@ -409,15 +437,24 @@
 	"uniform uint u_shifts[8];\n" \
 	"uniform float u_amps[8];\n" \
 	"uniform float u_min_wavelength;\n" \
+	"uniform uint u_vshift;\n" \
+	"uniform uint u_seed_prime;\n" \
+	"uniform uint u_seed_salt;\n" \
+	"uniform uint u_warp_shift;\n" \
+	"uniform uint u_warp_salt;\n" \
+	"uniform float u_warp_freq;\n" \
+	"uniform float u_warp_amp;\n" \
+	"uniform vec2 u_rot_cs;\n" \
 	CHAFF_GLSL_HASH_FN \
 	CHAFF_GLSL_GRAD_NOISE_FN \
-	CHAFF_GLSL_FLOW_FN \
 	CHAFF_GLSL_EVAL_FN \
 	CHAFF_GLSL_EVAL_MULTI_FN \
-	CHAFF_GLSL_WATER_FN \
 	"void main() {\n" \
 	"    vec2 world_pos = u_origin + gl_FragCoord.xy * u_step;\n" \
-	"    float h = chaff_eval_multi(world_pos, u_seed, u_count, u_shifts, u_amps, u_min_wavelength);\n" \
+	"    float wamp = (u_warp_amp == 0.0) ? 6.0 : (u_warp_amp > 0.0 ? u_warp_amp : 0.0);\n" \
+	"    float h = chaff_eval_multi_full(world_pos, u_seed, u_count, u_shifts, u_amps, u_min_wavelength,\n" \
+	"                                    u_vshift, u_seed_prime, u_seed_salt,\n" \
+	"                                    u_warp_freq, u_warp_shift, wamp, u_warp_salt, u_rot_cs);\n" \
 	"    fragColor = vec4(h, h, h, 1.0);\n" \
 	"}\n"
 
@@ -430,6 +467,15 @@ typedef struct {
 	uint32_t shifts[8];         /* Lattice size 2^shift per octave */
 	float    amps[8];           /* Amplitude weight per octave */
 	float    min_wavelength;    /* Nyquist cutoff filter: drop octaves with (1<<shift) < min_wavelength */
+	uint32_t vshift;            /* Optional bitshift divider (0 = default 8) */
+	uint32_t warp_shift;        /* Optional domain warp octave shift (0 = default 5) */
+	uint32_t warp_salt;         /* Optional domain warp seed XOR salt (0 = default 0x9E3779B9u) */
+	float    warp_freq;         /* Optional domain warp frequency scale (0.0f = default 0.0625f) */
+	float    warp_amp;          /* Optional domain warp displacement amplitude (0.0f = default 6.0f, <0 = disable) */
+	float    rot_cos;           /* Optional inter-octave rotation cos(theta) (0.0f = default golden 0.8506508f) */
+	float    rot_sin;           /* Optional inter-octave rotation sin(theta) (0.0f = default golden 0.5257311f) */
+	uint32_t seed_prime;        /* Optional per-octave seed prime (0 = default 0x85EBCA77u) */
+	uint32_t seed_salt;         /* Optional per-octave seed salt (0 = default 1u) */
 } chaff_gl_uniforms_t;
 
 static inline const char *chaff_glsl_fragment_shader_source(void)
@@ -491,7 +537,9 @@ static inline uint32_t chaff_glsl_ref_hash3(int16_t x, int16_t y, int16_t z, uin
 	return h;
 }
 
-static inline float chaff_glsl_ref_sample_3d(float wx, float wy, float wz, unsigned shift, uint32_t seed) {
+static inline float chaff_glsl_ref_sample_3d_ex(float wx, float wy, float wz, unsigned shift, unsigned vshift, uint32_t seed) {
+	unsigned vs = (vshift > 0u && vshift < 32u) ? vshift : 24u;
+	float norm = (float)((1ULL << (32u - vs)) - 1ULL);
 	float cell_size = (float)(1u << shift);
 	float px = wx / cell_size;
 	float py = wy / cell_size;
@@ -510,14 +558,14 @@ static inline float chaff_glsl_ref_sample_3d(float wx, float wy, float wz, unsig
 	int cy = iy * step_px;
 	int cz = iz * step_px;
 
-	uint32_t v000 = chaff_glsl_ref_hash3((int16_t)cx, (int16_t)cy, (int16_t)cz, seed) >> 24u;
-	uint32_t v100 = chaff_glsl_ref_hash3((int16_t)(cx + step_px), (int16_t)cy, (int16_t)cz, seed) >> 24u;
-	uint32_t v010 = chaff_glsl_ref_hash3((int16_t)cx, (int16_t)(cy + step_px), (int16_t)cz, seed) >> 24u;
-	uint32_t v110 = chaff_glsl_ref_hash3((int16_t)(cx + step_px), (int16_t)(cy + step_px), (int16_t)cz, seed) >> 24u;
-	uint32_t v001 = chaff_glsl_ref_hash3((int16_t)cx, (int16_t)cy, (int16_t)(cz + step_px), seed) >> 24u;
-	uint32_t v101 = chaff_glsl_ref_hash3((int16_t)(cx + step_px), (int16_t)cy, (int16_t)(cz + step_px), seed) >> 24u;
-	uint32_t v011 = chaff_glsl_ref_hash3((int16_t)cx, (int16_t)(cy + step_px), (int16_t)(cz + step_px), seed) >> 24u;
-	uint32_t v111 = chaff_glsl_ref_hash3((int16_t)(cx + step_px), (int16_t)(cy + step_px), (int16_t)(cz + step_px), seed) >> 24u;
+	uint32_t v000 = chaff_glsl_ref_hash3((int16_t)cx, (int16_t)cy, (int16_t)cz, seed) >> vs;
+	uint32_t v100 = chaff_glsl_ref_hash3((int16_t)(cx + step_px), (int16_t)cy, (int16_t)cz, seed) >> vs;
+	uint32_t v010 = chaff_glsl_ref_hash3((int16_t)cx, (int16_t)(cy + step_px), (int16_t)cz, seed) >> vs;
+	uint32_t v110 = chaff_glsl_ref_hash3((int16_t)(cx + step_px), (int16_t)(cy + step_px), (int16_t)cz, seed) >> vs;
+	uint32_t v001 = chaff_glsl_ref_hash3((int16_t)cx, (int16_t)cy, (int16_t)(cz + step_px), seed) >> vs;
+	uint32_t v101 = chaff_glsl_ref_hash3((int16_t)(cx + step_px), (int16_t)cy, (int16_t)(cz + step_px), seed) >> vs;
+	uint32_t v011 = chaff_glsl_ref_hash3((int16_t)cx, (int16_t)(cy + step_px), (int16_t)(cz + step_px), seed) >> vs;
+	uint32_t v111 = chaff_glsl_ref_hash3((int16_t)(cx + step_px), (int16_t)(cy + step_px), (int16_t)(cz + step_px), seed) >> vs;
 
 	float b00 = (float)v000 + ((float)v100 - (float)v000) * ux;
 	float b10 = (float)v010 + ((float)v110 - (float)v010) * ux;
@@ -527,7 +575,11 @@ static inline float chaff_glsl_ref_sample_3d(float wx, float wy, float wz, unsig
 	float b0 = b00 + (b10 - b00) * uy;
 	float b1 = b01 + (b11 - b01) * uy;
 
-	return (b0 + (b1 - b0) * uz) / 255.0f;
+	return (b0 + (b1 - b0) * uz) / norm;
+}
+
+static inline float chaff_glsl_ref_sample_3d(float wx, float wy, float wz, unsigned shift, uint32_t seed) {
+	return chaff_glsl_ref_sample_3d_ex(wx, wy, wz, shift, 24u, seed);
 }
 
 typedef struct {
@@ -537,7 +589,9 @@ typedef struct {
 	float grad_z;
 } chaff_glsl_ref_vec4_t;
 
-static inline chaff_glsl_ref_vec4_t chaff_glsl_ref_sample_grad_3d(float wx, float wy, float wz, unsigned shift, uint32_t seed) {
+static inline chaff_glsl_ref_vec4_t chaff_glsl_ref_sample_grad_3d_ex(float wx, float wy, float wz, unsigned shift, unsigned vshift, uint32_t seed) {
+	unsigned vs = (vshift > 0u && vshift < 32u) ? vshift : 24u;
+	float norm = (float)((1ULL << (32u - vs)) - 1ULL);
 	float cell_size = (float)(1u << shift);
 	float px = wx / cell_size;
 	float py = wy / cell_size;
@@ -559,14 +613,14 @@ static inline chaff_glsl_ref_vec4_t chaff_glsl_ref_sample_grad_3d(float wx, floa
 	int cy = iy * step_px;
 	int cz = iz * step_px;
 
-	float v000 = (float)(chaff_glsl_ref_hash3((int16_t)cx, (int16_t)cy, (int16_t)cz, seed) >> 24u);
-	float v100 = (float)(chaff_glsl_ref_hash3((int16_t)(cx + step_px), (int16_t)cy, (int16_t)cz, seed) >> 24u);
-	float v010 = (float)(chaff_glsl_ref_hash3((int16_t)cx, (int16_t)(cy + step_px), (int16_t)cz, seed) >> 24u);
-	float v110 = (float)(chaff_glsl_ref_hash3((int16_t)(cx + step_px), (int16_t)(cy + step_px), (int16_t)cz, seed) >> 24u);
-	float v001 = (float)(chaff_glsl_ref_hash3((int16_t)cx, (int16_t)cy, (int16_t)(cz + step_px), seed) >> 24u);
-	float v101 = (float)(chaff_glsl_ref_hash3((int16_t)(cx + step_px), (int16_t)cy, (int16_t)(cz + step_px), seed) >> 24u);
-	float v011 = (float)(chaff_glsl_ref_hash3((int16_t)cx, (int16_t)(cy + step_px), (int16_t)(cz + step_px), seed) >> 24u);
-	float v111 = (float)(chaff_glsl_ref_hash3((int16_t)(cx + step_px), (int16_t)(cy + step_px), (int16_t)(cz + step_px), seed) >> 24u);
+	float v000 = (float)(chaff_glsl_ref_hash3((int16_t)cx, (int16_t)cy, (int16_t)cz, seed) >> vs);
+	float v100 = (float)(chaff_glsl_ref_hash3((int16_t)(cx + step_px), (int16_t)cy, (int16_t)cz, seed) >> vs);
+	float v010 = (float)(chaff_glsl_ref_hash3((int16_t)cx, (int16_t)(cy + step_px), (int16_t)cz, seed) >> vs);
+	float v110 = (float)(chaff_glsl_ref_hash3((int16_t)(cx + step_px), (int16_t)(cy + step_px), (int16_t)cz, seed) >> vs);
+	float v001 = (float)(chaff_glsl_ref_hash3((int16_t)cx, (int16_t)cy, (int16_t)(cz + step_px), seed) >> vs);
+	float v101 = (float)(chaff_glsl_ref_hash3((int16_t)(cx + step_px), (int16_t)cy, (int16_t)(cz + step_px), seed) >> vs);
+	float v011 = (float)(chaff_glsl_ref_hash3((int16_t)cx, (int16_t)(cy + step_px), (int16_t)(cz + step_px), seed) >> vs);
+	float v111 = (float)(chaff_glsl_ref_hash3((int16_t)(cx + step_px), (int16_t)(cy + step_px), (int16_t)(cz + step_px), seed) >> vs);
 
 	float b00 = v000 + (v100 - v000) * ux;
 	float b10 = v010 + (v110 - v010) * ux;
@@ -576,7 +630,7 @@ static inline chaff_glsl_ref_vec4_t chaff_glsl_ref_sample_grad_3d(float wx, floa
 	float b0 = b00 + (b10 - b00) * uy;
 	float b1 = b01 + (b11 - b01) * uy;
 
-	float val = (b0 + (b1 - b0) * uz) / 255.0f;
+	float val = (b0 + (b1 - b0) * uz) / norm;
 
 	float dx00 = v100 - v000;
 	float dx10 = v110 - v010;
@@ -594,10 +648,14 @@ static inline chaff_glsl_ref_vec4_t chaff_glsl_ref_sample_grad_3d(float wx, floa
 
 	chaff_glsl_ref_vec4_t out;
 	out.val = val;
-	out.grad_x = (dN_dx * du_x) / (255.0f * cell_size);
-	out.grad_y = (dN_dy * du_y) / (255.0f * cell_size);
-	out.grad_z = (dN_dz * du_z) / (255.0f * cell_size);
+	out.grad_x = (dN_dx * du_x) / (norm * cell_size);
+	out.grad_y = (dN_dy * du_y) / (norm * cell_size);
+	out.grad_z = (dN_dz * du_z) / (norm * cell_size);
 	return out;
+}
+
+static inline chaff_glsl_ref_vec4_t chaff_glsl_ref_sample_grad_3d(float wx, float wy, float wz, unsigned shift, uint32_t seed) {
+	return chaff_glsl_ref_sample_grad_3d_ex(wx, wy, wz, shift, 24u, seed);
 }
 
 static inline uint32_t chaff_glsl_ref_hash4(int16_t x, int16_t y, int16_t z, int16_t w, uint32_t seed) {
@@ -616,7 +674,9 @@ static inline uint32_t chaff_glsl_ref_hash4(int16_t x, int16_t y, int16_t z, int
 	return h;
 }
 
-static inline float chaff_glsl_ref_sample_4d(float wx, float wy, float wz, float ww, unsigned shift, uint32_t seed) {
+static inline float chaff_glsl_ref_sample_4d_ex(float wx, float wy, float wz, float ww, unsigned shift, unsigned vshift, uint32_t seed) {
+	unsigned vs = (vshift > 0u && vshift < 32u) ? vshift : 24u;
+	float norm = (float)((1ULL << (32u - vs)) - 1ULL);
 	float cell_size = (float)(1u << shift);
 	float px = wx / cell_size;
 	float py = wy / cell_size;
@@ -645,8 +705,8 @@ static inline float chaff_glsl_ref_sample_4d(float wx, float wy, float wz, float
 		int ox = (i & 1) ? step_px : 0;
 		int oy = (i & 2) ? step_px : 0;
 		int oz = (i & 4) ? step_px : 0;
-		float v0 = (float)(chaff_glsl_ref_hash4((int16_t)(cx + ox), (int16_t)(cy + oy), (int16_t)(cz + oz), (int16_t)cw, seed) >> 24u);
-		float v1 = (float)(chaff_glsl_ref_hash4((int16_t)(cx + ox), (int16_t)(cy + oy), (int16_t)(cz + oz), (int16_t)(cw + step_px), seed) >> 24u);
+		float v0 = (float)(chaff_glsl_ref_hash4((int16_t)(cx + ox), (int16_t)(cy + oy), (int16_t)(cz + oz), (int16_t)cw, seed) >> vs);
+		float v1 = (float)(chaff_glsl_ref_hash4((int16_t)(cx + ox), (int16_t)(cy + oy), (int16_t)(cz + oz), (int16_t)(cw + step_px), seed) >> vs);
 		d[i] = v0 + (v1 - v0) * uw;
 	}
 
@@ -658,7 +718,11 @@ static inline float chaff_glsl_ref_sample_4d(float wx, float wy, float wz, float
 	float b0 = c0 + (c2 - c0) * uy;
 	float b1 = c1 + (c3 - c1) * uy;
 
-	return (b0 + (b1 - b0) * ux) / 255.0f;
+	return (b0 + (b1 - b0) * ux) / norm;
+}
+
+static inline float chaff_glsl_ref_sample_4d(float wx, float wy, float wz, float ww, unsigned shift, uint32_t seed) {
+	return chaff_glsl_ref_sample_4d_ex(wx, wy, wz, ww, shift, 24u, seed);
 }
 
 typedef struct {
@@ -669,7 +733,9 @@ typedef struct {
 	float grad_w;
 } chaff_glsl_ref_vec5_t;
 
-static inline chaff_glsl_ref_vec5_t chaff_glsl_ref_sample_grad_4d(float wx, float wy, float wz, float ww, unsigned shift, uint32_t seed) {
+static inline chaff_glsl_ref_vec5_t chaff_glsl_ref_sample_grad_4d_ex(float wx, float wy, float wz, float ww, unsigned shift, unsigned vshift, uint32_t seed) {
+	unsigned vs = (vshift > 0u && vshift < 32u) ? vshift : 24u;
+	float norm = (float)((1ULL << (32u - vs)) - 1ULL);
 	float cell_size = (float)(1u << shift);
 	float px = wx / cell_size;
 	float py = wy / cell_size;
@@ -702,8 +768,8 @@ static inline chaff_glsl_ref_vec5_t chaff_glsl_ref_sample_grad_4d(float wx, floa
 		int ox = (i & 1) ? step_px : 0;
 		int oy = (i & 2) ? step_px : 0;
 		int oz = (i & 4) ? step_px : 0;
-		float v0 = (float)(chaff_glsl_ref_hash4((int16_t)(cx + ox), (int16_t)(cy + oy), (int16_t)(cz + oz), (int16_t)cw, seed) >> 24u);
-		float v1 = (float)(chaff_glsl_ref_hash4((int16_t)(cx + ox), (int16_t)(cy + oy), (int16_t)(cz + oz), (int16_t)(cw + step_px), seed) >> 24u);
+		float v0 = (float)(chaff_glsl_ref_hash4((int16_t)(cx + ox), (int16_t)(cy + oy), (int16_t)(cz + oz), (int16_t)cw, seed) >> vs);
+		float v1 = (float)(chaff_glsl_ref_hash4((int16_t)(cx + ox), (int16_t)(cy + oy), (int16_t)(cz + oz), (int16_t)(cw + step_px), seed) >> vs);
 		dw_c[i] = v1 - v0;
 		d[i] = v0 + (v1 - v0) * uw;
 	}
@@ -715,7 +781,7 @@ static inline chaff_glsl_ref_vec5_t chaff_glsl_ref_sample_grad_4d(float wx, floa
 
 	float b0 = c0 + (c2 - c0) * uy;
 	float b1 = c1 + (c3 - c1) * uy;
-	float val = (b0 + (b1 - b0) * ux) / 255.0f;
+	float val = (b0 + (b1 - b0) * ux) / norm;
 
 	float dN_dx = b1 - b0;
 	float dN_dy = (c2 - c0) + ((c3 - c1) - (c2 - c0)) * ux;
@@ -731,7 +797,7 @@ static inline chaff_glsl_ref_vec5_t chaff_glsl_ref_sample_grad_4d(float wx, floa
 	float dw_y1 = dw1 + (dw3 - dw1) * uy;
 	float dN_dw = dw_y0 + (dw_y1 - dw_y0) * ux;
 
-	float scale = 1.0f / (255.0f * cell_size);
+	float scale = 1.0f / (norm * cell_size);
 	chaff_glsl_ref_vec5_t out;
 	out.val = val;
 	out.grad_x = (dN_dx * du_x) * scale;
@@ -741,7 +807,11 @@ static inline chaff_glsl_ref_vec5_t chaff_glsl_ref_sample_grad_4d(float wx, floa
 	return out;
 }
 
-/* Reference C mirrors for CHAFF_GLSL_GRAD_NOISE_FN and CHAFF_GLSL_FLOW_FN */
+static inline chaff_glsl_ref_vec5_t chaff_glsl_ref_sample_grad_4d(float wx, float wy, float wz, float ww, unsigned shift, uint32_t seed) {
+	return chaff_glsl_ref_sample_grad_4d_ex(wx, wy, wz, ww, shift, 24u, seed);
+}
+
+/* Reference C mirrors for CHAFF_GLSL_GRAD_NOISE_FN */
 static inline void chaff_glsl_ref_grad_dir(int32_t cx, int32_t cy, uint32_t seed, float *out_gx, float *out_gy) {
 	uint32_t h = chaff_glsl_ref_hash3((int16_t)cx, (int16_t)cy, 0, seed);
 	float gx = (float)((int32_t)(h & 0xFFFFu) - 32768) * (1.0f / 32768.0f);
@@ -751,8 +821,9 @@ static inline void chaff_glsl_ref_grad_dir(int32_t cx, int32_t cy, uint32_t seed
 	*out_gy = gy * inv;
 }
 
-static inline void chaff_glsl_ref_grad_noise2d(float px, float py, uint32_t seed,
-                                               float *out_val, float *out_gx, float *out_gy) {
+static inline void chaff_glsl_ref_grad_noise2d_ex(float px, float py, uint32_t seed, float grad_norm,
+                                                   float *out_val, float *out_gx, float *out_gy) {
+	float gn = (grad_norm > 0.0f) ? grad_norm : CHAFF_GLSL_GRAD2D_NORM;
 	float ipx = floorf(px);
 	float ipy = floorf(py);
 	float fpx = px - ipx;
@@ -778,7 +849,7 @@ static inline void chaff_glsl_ref_grad_noise2d(float px, float py, uint32_t seed
 	float k0 = v10 - v00;
 	float k1 = v01 - v00;
 	float k2 = v11 - v01 - k0;
-	float val = 0.5f + 0.70710678f * (v00 + k0 * ux + k1 * uy + k2 * ux * uy);
+	float val = 0.5f + gn * (v00 + k0 * ux + k1 * uy + k2 * ux * uy);
 	if (val < 0.0f) val = 0.0f;
 	if (val > 1.0f) val = 1.0f;
 
@@ -786,8 +857,56 @@ static inline void chaff_glsl_ref_grad_noise2d(float px, float py, uint32_t seed
 	float giy = g00y + (g10y - g00y) * ux + (g01y - g00y) * uy + (g11y - g01y - g10y + g00y) * (ux * uy);
 
 	if (out_val) *out_val = val;
-	if (out_gx)  *out_gx  = 0.70710678f * (gix + dux * (k0 + k2 * uy));
-	if (out_gy)  *out_gy  = 0.70710678f * (giy + duy * (k1 + k2 * ux));
+	if (out_gx)  *out_gx  = gn * (gix + dux * (k0 + k2 * uy));
+	if (out_gy)  *out_gy  = gn * (giy + duy * (k1 + k2 * ux));
+}
+
+static inline void chaff_glsl_ref_grad_noise2d(float px, float py, uint32_t seed,
+                                               float *out_val, float *out_gx, float *out_gy) {
+	chaff_glsl_ref_grad_noise2d_ex(px, py, seed, CHAFF_GLSL_GRAD2D_NORM, out_val, out_gx, out_gy);
+}
+
+static inline void chaff_glsl_ref_value_grad_noise2d(float px, float py, uint32_t seed,
+                                                     float *out_val, float *out_gx, float *out_gy) {
+	float ipx = floorf(px);
+	float ipy = floorf(py);
+	float fpx = px - ipx;
+	float fpy = py - ipy;
+	float ux = fpx * fpx * fpx * (fpx * (fpx * 6.0f - 15.0f) + 10.0f);
+	float uy = fpy * fpy * fpy * (fpy * (fpy * 6.0f - 15.0f) + 10.0f);
+	float dux = 30.0f * fpx * fpx * (fpx * (fpx - 2.0f) + 1.0f);
+	float duy = 30.0f * fpy * fpy * (fpy * (fpy - 2.0f) + 1.0f);
+	int16_t cx = (int16_t)ipx;
+	int16_t cy = (int16_t)ipy;
+
+	const float inv_norm = 1.0f / 16777215.0f;
+	float v00 = (float)(chaff_glsl_ref_hash2(cy,              cx,              seed) >> 8u) * inv_norm;
+	float v10 = (float)(chaff_glsl_ref_hash2(cy,              (int16_t)(cx+1), seed) >> 8u) * inv_norm;
+	float v01 = (float)(chaff_glsl_ref_hash2((int16_t)(cy+1), cx,              seed) >> 8u) * inv_norm;
+	float v11 = (float)(chaff_glsl_ref_hash2((int16_t)(cy+1), (int16_t)(cx+1), seed) >> 8u) * inv_norm;
+
+	float k0 = v10 - v00;
+	float k1 = v01 - v00;
+	float k2 = v11 - v01 - k0;
+
+	if (out_val) *out_val = v00 + k0 * ux + k1 * uy + k2 * ux * uy;
+	if (out_gx)  *out_gx  = dux * (k0 + k2 * uy);
+	if (out_gy)  *out_gy  = duy * (k1 + k2 * ux);
+}
+
+static inline float chaff_glsl_ref_lowpass_weight(float wavelength, float step_wu) {
+	if (step_wu <= 0.0f) return 1.0f;
+	float t = (wavelength - 2.0f * step_wu) / (2.0f * step_wu);
+	if (t <= 0.0f) return 0.0f;
+	if (t >= 1.0f) return 1.0f;
+	return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
+}
+
+static inline float chaff_glsl_ref_band_weight(float wavelength, float fine_step_wu, float coarse_step_wu) {
+	float w_fine = chaff_glsl_ref_lowpass_weight(wavelength, fine_step_wu);
+	if (w_fine <= 0.0f) return 0.0f;
+	float w_coarse = chaff_glsl_ref_lowpass_weight(wavelength, coarse_step_wu);
+	return w_fine * (1.0f - w_coarse);
 }
 
 static inline void chaff_glsl_ref_grad4(int32_t cx, int32_t cy, int32_t cz, int32_t cw,
@@ -804,7 +923,8 @@ static inline void chaff_glsl_ref_grad4(int32_t cx, int32_t cy, int32_t cz, int3
 	out_g[3] = gw * inv;
 }
 
-static inline chaff_glsl_ref_vec4_t chaff_glsl_ref_grad_noise4d(float px, float py, float pz, float pw, uint32_t seed) {
+static inline chaff_glsl_ref_vec4_t chaff_glsl_ref_grad_noise4d_ex(float px, float py, float pz, float pw, uint32_t seed, float grad_norm) {
+	float gn = (grad_norm > 0.0f) ? grad_norm : CHAFF_GLSL_GRAD4D_NORM;
 	float ipx = floorf(px), ipy = floorf(py), ipz = floorf(pz), ipw = floorf(pw);
 	float fpx = px - ipx, fpy = py - ipy, fpz = pz - ipz, fpw = pw - ipw;
 	float ux = fpx * fpx * fpx * (fpx * (fpx * 6.0f - 15.0f) + 10.0f);
@@ -835,15 +955,15 @@ static inline chaff_glsl_ref_vec4_t chaff_glsl_ref_grad_noise4d(float px, float 
 	float c3 = d[3] + (d[7] - d[3]) * uz;
 	float b0 = c0 + (c2 - c0) * uy;
 	float b1 = c1 + (c3 - c1) * uy;
-	float val = 0.5f + 0.72f * (b0 + (b1 - b0) * ux);
+	float val = 0.5f + gn * (b0 + (b1 - b0) * ux);
 	if (val < 0.0f) val = 0.0f;
 	if (val > 1.0f) val = 1.0f;
 
-	float dN_dx = (b1 - b0) * dux * 0.72f;
-	float dN_dy = ((c2 - c0) + ((c3 - c1) - (c2 - c0)) * ux) * duy * 0.72f;
+	float dN_dx = (b1 - b0) * dux * gn;
+	float dN_dy = ((c2 - c0) + ((c3 - c1) - (c2 - c0)) * ux) * duy * gn;
 	float dz0 = (d[4] - d[0]) + ((d[6] - d[2]) - (d[4] - d[0])) * uy;
 	float dz1 = (d[5] - d[1]) + ((d[7] - d[3]) - (d[5] - d[1])) * uy;
-	float dN_dz = (dz0 + (dz1 - dz0) * ux) * duz * 0.72f;
+	float dN_dz = (dz0 + (dz1 - dz0) * ux) * duz * gn;
 
 	chaff_glsl_ref_vec4_t out;
 	out.val = val;
@@ -853,70 +973,173 @@ static inline chaff_glsl_ref_vec4_t chaff_glsl_ref_grad_noise4d(float px, float 
 	return out;
 }
 
-static inline void chaff_glsl_ref_eval_flow_2d(float wx, float wy, float anim_time,
-                                               float *out_dir_x, float *out_dir_y,
-                                               float *out_gust, float *out_catspaw) {
-	float raw_t0 = anim_time * 0.05f;
-	float t0 = raw_t0 - 1024.0f * floorf(raw_t0 / 1024.0f);
-	float p0x = wx * 0.0055f - 0.741f * t0;
-	float p0y = wy * 0.0055f + 0.671f * t0;
-	float w0v = 0.0f, w0gx = 0.0f, w0gy = 0.0f;
-	chaff_glsl_ref_grad_noise2d(p0x, p0y, 0x57494E44u, &w0v, &w0gx, &w0gy);
+static inline chaff_glsl_ref_vec4_t chaff_glsl_ref_grad_noise4d(float px, float py, float pz, float pw, uint32_t seed) {
+	return chaff_glsl_ref_grad_noise4d_ex(px, py, pz, pw, seed, CHAFF_GLSL_GRAD4D_NORM);
+}
 
-	float bwx = 0.741f - w0gy * 0.28f;
-	float bwy = -0.671f + w0gx * 0.28f;
-	float bw_inv = 1.0f / sqrtf(bwx * bwx + bwy * bwy + 1e-6f);
-	bwx *= bw_inv;
-	bwy *= bw_inv;
+/* ============================================================================
+ * Configurable Parameter Descriptors & Parameterized C Reference Evaluators
+ * ============================================================================ */
 
-	float raw_t1 = anim_time * 0.12f;
-	float t1 = raw_t1 - 1024.0f * floorf(raw_t1 / 1024.0f);
-	float u1x = wx * 0.028f + w0gx * 0.65f;
-	float u1y = wy * 0.028f + w0gy * 0.65f;
-	float p1x = ( 0.8f * u1x + 0.6f * u1y) - 0.822f * t1;
-	float p1y = (-0.6f * u1x + 0.8f * u1y) + 0.569f * t1;
-	float w1v = 0.0f, w1gx = 0.0f, w1gy = 0.0f;
-	chaff_glsl_ref_grad_noise2d(p1x, p1y, 0x47555354u, &w1v, &w1gx, &w1gy);
-	float mgx =  0.8f * w1gx - 0.6f * w1gy;
-	float mgy =  0.6f * w1gx + 0.8f * w1gy;
+typedef struct {
+	int      max_octaves;       /**< Maximum FBM octaves to evaluate (default 4, max 8) */
+	float    lacunarity;        /**< Frequency multiplier per octave (default 2.03) */
+	float    gain;              /**< Amplitude multiplier per octave (default 0.50) */
+	float    warp_strength;     /**< Domain warp displacement strength (default 0.32) */
+	float    erosion_strength;  /**< Slope-driven analytical damping (default 0.28) */
+	float    ridge_sharpness;   /**< Ridged multifractal folding blend (default 0.45) */
+	uint32_t seed_stride;       /**< Per-octave golden-ratio hash salt (default 0x9E3779B9u) */
+	float    rot_cos;           /**< Inter-octave rotation cos(theta) (0.0f = default 0.8f) */
+	float    rot_sin;           /**< Inter-octave rotation sin(theta) (0.0f = default 0.6f) */
+	float    nyquist_high;      /**< Smoothstep upper filter width cutoff (0.0f = default 0.55f) */
+	float    nyquist_low;       /**< Smoothstep lower filter width cutoff (0.0f = default 0.18f) */
+	float    ridge_octave_step; /**< Per-octave ridge ramp factor (0.0f = default CHAFF_GLSL_DEFAULT_RIDGE_OCTAVE_STEP = 0.25f) */
+	float    grad_norm;         /**< 2D gradient noise normalization factor (0.0f = default CHAFF_GLSL_GRAD2D_NORM) */
+} chaff_multi_warp_params_t;
 
-	float lwx = bwx - mgy * 0.22f;
-	float lwy = bwy + mgx * 0.22f;
-	float lw_inv = 1.0f / sqrtf(lwx * lwx + lwy * lwy + 1e-6f);
-	lwx *= lw_inv;
-	lwy *= lw_inv;
+#define CHAFF_MULTI_WARP_PARAMS_DEFAULT { \
+	4, 2.03f, 0.50f, 0.32f, 0.28f, 0.45f, 0x9E3779B9u, 0.8f, 0.6f, 0.55f, 0.18f, \
+	CHAFF_GLSL_DEFAULT_RIDGE_OCTAVE_STEP, CHAFF_GLSL_GRAD2D_NORM \
+}
 
-	float raw_t2 = anim_time * 0.22f;
-	float t2 = raw_t2 - 1024.0f * floorf(raw_t2 / 1024.0f);
-	float r1x =  0.8f * (wx * 0.120f) + 0.6f * (wy * 0.120f) + w0gx * 0.45f + w1gx * 0.55f;
-	float r1y = -0.6f * (wx * 0.120f) + 0.8f * (wy * 0.120f) + w0gy * 0.45f + w1gy * 0.55f;
-	float p2x = ( 0.8f * r1x + 0.6f * r1y) - 0.640f * t2;
-	float p2y = (-0.6f * r1x + 0.8f * r1y) + 0.768f * t2;
-	float w2v = 0.0f, w2gx = 0.0f, w2gy = 0.0f;
-	chaff_glsl_ref_grad_noise2d(p2x, p2y, 0x45444459u, &w2v, &w2gx, &w2gy);
-	/* irot * irot = mat2(0.28, 0.96, -0.96, 0.28) */
-	float u2gx =  0.28f * w2gx - 0.96f * w2gy;
-	float u2gy =  0.96f * w2gx + 0.28f * w2gy;
+static inline float chaff_glsl_ref_eval_uniforms(
+	const chaff_gl_uniforms_t *u, float frag_x, float frag_y)
+{
+	if (!u || u->count == 0)
+		return 0.0f;
 
-	float fwx = lwx - u2gy * 0.16f;
-	float fwy = lwy + u2gx * 0.16f;
-	float fw_inv = 1.0f / sqrtf(fwx * fwx + fwy * fwy + 1e-6f);
-	fwx *= fw_inv;
-	fwy *= fw_inv;
+	unsigned vshift = (u->vshift > 0u && u->vshift < 32u) ? u->vshift : 8u;
+	float half_range = (float)(1ULL << (31u - vshift)) / 65536.0f;
+	if (half_range < 1.0f) half_range = 1.0f;
 
-	float gust = 0.42f + 0.45f * w0v + 0.55f * (w1v - 0.38f) + 0.30f * (w2v - 0.42f);
-	if (gust < 0.25f) gust = 0.25f;
-	if (gust > 1.35f) gust = 1.35f;
+	float wx = u->origin[0] + frag_x * u->step[0];
+	float wy = u->origin[1] + frag_y * u->step[1];
+	float cur_px = wx;
+	float cur_py = wy;
 
-	float cp_raw = (w1v * 0.62f + w2v * 0.38f - 0.38f) / (0.76f - 0.38f);
-	if (cp_raw < 0.0f) cp_raw = 0.0f;
-	if (cp_raw > 1.0f) cp_raw = 1.0f;
-	float cp = cp_raw * cp_raw * (3.0f - 2.0f * cp_raw);
+	float warp_amp = (u->warp_amp == 0.0f) ? 6.0f : (u->warp_amp > 0.0f ? u->warp_amp : 0.0f);
+	if (warp_amp > 0.0f) {
+		float wfreq = (u->warp_freq > 0.0f) ? u->warp_freq : 0.0625f;
+		unsigned wshift = (u->warp_shift > 0u) ? u->warp_shift : 5u;
+		uint32_t wsalt = (u->warp_salt != 0u) ? u->warp_salt : 0x9E3779B9u;
+		float warp_raw = chaff_glsl_ref_sample_octave(wx * wfreq, wy * wfreq, wshift, vshift, u->seed ^ wsalt);
+		float warp_val = (warp_raw / 65536.0f) - half_range;
+		float d = warp_val * (warp_amp / half_range);
+		cur_px += d;
+		cur_py -= d;
+	}
 
-	if (out_dir_x)   *out_dir_x   = fwx;
-	if (out_dir_y)   *out_dir_y   = fwy;
-	if (out_gust)    *out_gust    = gust;
-	if (out_catspaw) *out_catspaw = cp;
+	float rcos = (u->rot_cos == 0.0f && u->rot_sin == 0.0f) ? 0.8506508f : u->rot_cos;
+	float rsin = (u->rot_cos == 0.0f && u->rot_sin == 0.0f) ? 0.5257311f : u->rot_sin;
+	uint32_t prime = (u->seed_prime != 0u) ? u->seed_prime : 0x85EBCA77u;
+	uint32_t salt = (u->seed_salt != 0u) ? u->seed_salt : 1u;
+
+	float total_val = 0.0f;
+	uint32_t n = u->count < 8u ? u->count : 8u;
+	for (uint32_t i = 0; i < n; i++) {
+		float wavelength = (float)(1u << u->shifts[i]);
+		if (wavelength < u->min_wavelength)
+			continue;
+		uint32_t oct_seed = u->seed ^ (i * prime + salt);
+		float raw = chaff_glsl_ref_sample_octave(cur_px, cur_py, u->shifts[i], vshift, oct_seed);
+		float val = (raw / 65536.0f) - half_range;
+		total_val += val * (u->amps[i] / half_range);
+		float nx = rcos * cur_px - rsin * cur_py;
+		float ny = rsin * cur_px + rcos * cur_py;
+		cur_px = nx;
+		cur_py = ny;
+	}
+	return total_val;
+}
+
+static inline float chaff_glsl_ref_smoothstep(float e0, float e1, float x) {
+	float t = (x - e0) / (e1 - e0);
+	if (t < 0.0f) t = 0.0f;
+	if (t > 1.0f) t = 1.0f;
+	return t * t * (3.0f - 2.0f * t);
+}
+
+static inline void chaff_glsl_ref_curl_2d(float px, float py, uint32_t seed,
+                                          float *out_vx, float *out_vy)
+{
+	float nv = 0.5f, gx = 0.0f, gy = 0.0f;
+	chaff_glsl_ref_grad_noise2d(px, py, seed, &nv, &gx, &gy);
+	if (out_vx) *out_vx = -gy;
+	if (out_vy) *out_vy =  gx;
+}
+
+static inline void chaff_glsl_ref_eval_multi_warped_ex(
+	const chaff_multi_warp_params_t *params,
+	float wx, float wy, float base_shift, uint32_t seed, float texel_span,
+	float *out_val, float *out_gx, float *out_gy)
+{
+	const chaff_multi_warp_params_t def = CHAFF_MULTI_WARP_PARAMS_DEFAULT;
+	const chaff_multi_warp_params_t *mp = params ? params : &def;
+
+	float lacunarity = (mp->lacunarity > 0.0f) ? mp->lacunarity : 2.03f;
+	float gain       = (mp->gain > 0.0f)       ? mp->gain       : 0.50f;
+	float rcos       = (mp->rot_cos == 0.0f && mp->rot_sin == 0.0f) ? 0.8f : mp->rot_cos;
+	float rsin       = (mp->rot_cos == 0.0f && mp->rot_sin == 0.0f) ? 0.6f : mp->rot_sin;
+	float nyq_hi     = (mp->nyquist_high > 0.0f) ? mp->nyquist_high : 0.55f;
+	float nyq_lo     = (mp->nyquist_low > 0.0f)  ? mp->nyquist_low  : 0.18f;
+	uint32_t stride  = (mp->seed_stride != 0u)   ? mp->seed_stride  : 0x9E3779B9u;
+	float ridge_step = (mp->ridge_octave_step > 0.0f) ? mp->ridge_octave_step : CHAFF_GLSL_DEFAULT_RIDGE_OCTAVE_STEP;
+	float grad_norm  = (mp->grad_norm > 0.0f)         ? mp->grad_norm         : CHAFF_GLSL_GRAD2D_NORM;
+
+	float scale = exp2f(-base_shift);
+	float px = wx * scale;
+	float py = wy * scale;
+	float base_fw = (texel_span * scale > 1e-5f) ? (texel_span * scale) : 1e-5f;
+
+	float acc = 0.0f, wsum = 0.0f;
+	float total_gx = 0.0f, total_gy = 0.0f;
+	float slope_x = 0.0f, slope_y = 0.0f;
+	float amp = 1.0f, freq = 1.0f;
+	uint32_t s = seed;
+	int octs = (mp->max_octaves > 0 && mp->max_octaves <= 8) ? mp->max_octaves : 4;
+
+	for (int i = 0; i < octs; i++) {
+		float oct_fw = base_fw * freq;
+		float nyq = chaff_glsl_ref_smoothstep(nyq_hi, nyq_lo, oct_fw);
+		if (nyq > 0.001f) {
+			float qx = px * freq + slope_x * mp->warp_strength;
+			float qy = py * freq + slope_y * mp->warp_strength;
+			float nv = 0.5f, ngx = 0.0f, ngy = 0.0f;
+			chaff_glsl_ref_grad_noise2d_ex(qx, qy, s, grad_norm, &nv, &ngx, &ngy);
+
+			for (int r = 0; r < i; r++) {
+				float rx = rcos * ngx - rsin * ngy;
+				float ry = rsin * ngx + rcos * ngy;
+				ngx = rx;
+				ngy = ry;
+			}
+
+			slope_x += ngx * amp;
+			slope_y += ngy * amp;
+			float erosion = 1.0f / (1.0f + (slope_x * slope_x + slope_y * slope_y) * mp->erosion_strength);
+			float ridge = 1.0f - fabsf(nv * 2.0f - 1.0f);
+			float rblend = mp->ridge_sharpness * (float)i * ridge_step;
+			float blended = nv * (1.0f - rblend) + (ridge * ridge) * rblend;
+
+			float eff_amp = amp * erosion * nyq;
+			acc      += blended * eff_amp;
+			total_gx += ngx * (eff_amp * freq);
+			total_gy += ngy * (eff_amp * freq);
+			wsum     += eff_amp;
+		}
+		float rpx =  rcos * px + rsin * py;
+		float rpy = -rsin * px + rcos * py;
+		px = rpx;
+		py = rpy;
+		freq *= lacunarity;
+		amp  *= gain;
+		s    += stride;
+	}
+
+	float inv_w = (wsum > 1e-5f) ? (1.0f / wsum) : 1.0f;
+	if (out_val) *out_val = (wsum > 1e-5f) ? (acc * inv_w) : 0.5f;
+	if (out_gx)  *out_gx  = total_gx * inv_w * scale;
+	if (out_gy)  *out_gy  = total_gy * inv_w * scale;
 }
 
 #endif /* TTYPT_CHAFF_GLSL_H */

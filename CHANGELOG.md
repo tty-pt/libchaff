@@ -2,6 +2,19 @@
 
 All notable changes to `libchaff` (`@tty-pt/chaff`) are documented in this file.
 
+## [1.1.0] - 2026-11-16
+
+### Added
+- **Periodic Tiling, Domain Skew & 4D Slice Stepping (`include/ttypt/chaff.h`, `include/ttypt/noise.h`, `include/ttypt/chaff_glsl.h`)**:
+  - Wired `period_shift` and `skew[2]` across point samplers (`noise_wpoint_n_periodic`), corner caches (`noise_wcorners_periodic`), analytical 2D/3D/4D gradient samplers (`chaff_sample_grad_2d`, `chaff_sample_grad_3d`, `chaff_sample_grad_4d`), and GLSL shader contracts (`chaff_glsl.h`).
+  - Added bulk 2D slice stepper across 4D fields (`chaff_fill_slice_4d`) pre-collapsing invariant $W$ and $Z$ axes once per 4D cell in registers.
+  - Added struct-driven rotated FBM accumulator (`chaff_fbm_opts_t`, `chaff_fbm_rotated_2d`), periodic 2D sampler options (`chaff_periodic_opts_t`, `chaff_sample_periodic_2d_opts`), banded 2D curl flow (`chaff_eval_flow_2d_banded`), and 3D Ekman spiral atmospheric wind shear.
+- **Universal 7-OS & NPM CI Pipeline (`.github/workflows/ci.yml`, `Makefile`)**:
+  - Migrated `Makefile` to `include ../mk/include.mk` and added `.github/workflows/ci.yml` publishing `libchaff` across `deb,apk,rpm,pacman,brew,openbsd,winget` and `@tty-pt/chaff` to npm with `linux-x64`, `darwin-arm64`, `darwin-x64`, `win32-x64` N-API prebuilds and `chaff.wasm`.
+
+### Changed
+- Linked `chaff.wasm` / `noise.wasm` with shared memory and the `@tty-pt/stele` single-allocator substrate (`>=1.7.0` / `^1.7.0`).
+
 ## [1.0.0] - 2026-11-11
 
 ### Added
