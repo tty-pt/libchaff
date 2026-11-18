@@ -121,9 +121,9 @@ Traditional procedural noise libraries rely on floating-point arithmetic (`sin`,
   $$c_2 = v_2 + (((v_6 - v_2) \cdot u_z) \gg 16), \quad c_3 = v_3 + (((v_7 - v_3) \cdot u_z) \gg 16)$$
 * On a $32 \times 32$ cell, this cuts corner hashes from 256 down to 8 — a **96.8% reduction in hash operations** while producing bit-exact identical values to point queries.
 
-### D. Scanline Caching (`noise_scanline_t`, `noise_wcache_t`)
-* When rasterizing rows of pixels, `noise_scanline_eval_row()` and `noise_wrow()` cache active lattice corners in registers.
-* Lattice corners are fetched only when crossing a cell boundary (e.g. 17 corner fetches for 256 pixels at shift 4, rather than 256 independent fetches).
+### D. Scanline & Thread-Local 4-Corner Cell Caching (`noise_scanline_t`, `noise_wcache_t`, `CHAFF_TLS`)
+* When rasterizing rows of pixels, `noise_scanline_eval_row()` and `noise_wrow()` cache active lattice corners in registers so corners are fetched only when crossing a cell boundary (e.g. 17 corner fetches for 256 pixels at shift 4, rather than 256 independent fetches).
+* For general 2D periodic (`chaff_sample_periodic_2d_opts`) and multi-octave rotated FBM (`chaff_fbm_rotated_2d`) queries, thread-local (`_Thread_local`) 4-corner lattice cell caches retain the evaluated quad corners per octave, eliminating redundant corner hashes across spatially coherent queries while remaining 100% lock-free and race-free across multi-threaded `stele_wq` worker pools.
 
 ### E. Analytical Spatial Gradients in Registers (Zero Extra Hashes)
 * Determining surface normal slopes ($\frac{\partial H}{\partial x}, \frac{\partial H}{\partial y}, \frac{\partial H}{\partial z}$) traditionally requires finite central differences:

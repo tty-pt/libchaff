@@ -2,6 +2,13 @@
 
 All notable changes to `libchaff` (`@tty-pt/chaff`) are documented in this file.
 
+## [Unreleased] (target: v1.1.1)
+
+### Added
+- **Thread-Local 4-Corner Lattice Cell Caching (`src/libchaff.c`)**:
+  - Added 4-corner cell caching to `chaff_sample_periodic_2d_opts` and per-octave cell caching (`CHAFF_FBM_MAX_OCTAVES = 8`) to `chaff_fbm_rotated_2d`, reusing evaluated quad corner hashes whenever successive queries land inside the same `(cell_x, cell_y, shift, period_shift, seed)` lattice cell.
+  - Qualified noise cell caches with portable thread-local storage (`CHAFF_TLS` / `_Thread_local` / `__thread`) so concurrent worker threads (`stele_wq`) evaluate periodic and rotated FBM noise with zero data races.
+
 ## [1.1.0] - 2026-11-16
 
 ### Added
