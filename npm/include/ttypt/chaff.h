@@ -21,6 +21,18 @@
 
 #include <ttypt/noise.h>
 
+#ifndef _CHAFF_TLS
+#if defined(_MSC_VER)
+#define _CHAFF_TLS __declspec(thread)
+#elif defined(__GNUC__) || defined(__clang__)
+#define _CHAFF_TLS __thread
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L && !defined(__STDC_NO_THREADS__)
+#define _CHAFF_TLS _Thread_local
+#else
+#define _CHAFF_TLS
+#endif
+#endif
+
 /** Default octave value shift (vshift = 8 yields [0..255] after >> 16). */
 #define CHAFF_DEFAULT_VSHIFT 8u
 
@@ -1229,7 +1241,7 @@ chaff_wpoint_periodic_2d_ex(int32_t x, int32_t y, uint8_t shift, uint8_t period_
 		uint8_t vshift, valid;
 		uint32_t v00, v10, v01, v11;
 	} chaff_per_cache_t;
-	static chaff_per_cache_t s_per_cache[32];
+	static _CHAFF_TLS chaff_per_cache_t s_per_cache[32];
 	chaff_per_cache_t *pc = &s_per_cache[(shift ^ (seed >> 8)) & 31u];
 	uint32_t v00, v10, v01, v11;
 	if (pc->valid && pc->kx0 == kx0 && pc->ky0 == ky0 &&
@@ -1326,7 +1338,7 @@ static inline int32_t
 chaff_fbm_rotated_2d(const chaff_fbm_opts_t *opts, int32_t x, int32_t y)
 {
 	if (!opts || opts->min_shift > opts->max_shift) return 0;
-	static noise_wcache_t s_fbm_wcache[64];
+	static _CHAFF_TLS noise_wcache_t s_fbm_wcache[64];
 	unsigned vs = (opts->vshift && opts->vshift < 16u) ? (unsigned)opts->vshift : CHAFF_DEFAULT_VSHIFT;
 	unsigned fade_fl = opts->fade_flags ? opts->fade_flags : NOISE_FADE5;
 	int16_t base_amp = (opts->base_amp != 0) ? opts->base_amp : CHAFF_DEFAULT_BASE_AMP;
