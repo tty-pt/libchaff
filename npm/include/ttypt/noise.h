@@ -98,8 +98,21 @@ noise_r(int16_t *p, unsigned seed, unsigned w, uint8_t dim)
 static inline void
 noise_get_v(uint32_t *v, int16_t *s, uint16_t x, unsigned w, unsigned seed, uint8_t dim)
 {
-	const int16_t d = 1 << x;
-	int16_t va[dim * (1 << dim)];
+	const int16_t d = (int16_t)(1u << x);
+	if (dim == 2u) {
+		int16_t s0 = s[0], s1 = s[1];
+		int16_t s0d = (int16_t)(s0 + d), s1d = (int16_t)(s1 + d);
+		int16_t c0[2] = { s0,  s1  };
+		int16_t c1[2] = { s0,  s1d };
+		int16_t c2[2] = { s0d, s1  };
+		int16_t c3[2] = { s0d, s1d };
+		v[0] = noise_r(c0, seed, w, 2);
+		v[1] = noise_r(c1, seed, w, 2);
+		v[2] = noise_r(c2, seed, w, 2);
+		v[3] = noise_r(c3, seed, w, 2);
+		return;
+	}
+	int16_t va[NOISE_MAX_DIM * (1u << NOISE_MAX_DIM)];
 	int i, j;
 
 	for (i = 0; i < (1 << dim); i++) {
@@ -542,6 +555,33 @@ noise_wcorners_periodic(noise_wcache_t *c, const int16_t *s, unsigned x, unsigne
 static inline uint32_t
 noise_wpoint_c(noise_wcache_t *c, const int16_t *p, unsigned x, unsigned w, unsigned seed, uint8_t dim, unsigned flags)
 {
+	if (dim == 2u) {
+		if (x == 0u) {
+			int16_t p0[2] = { p[0], p[1] };
+			return noise_r(p0, seed, w, 2);
+		}
+		const uint16_t mask = COORDMASK_LSHIFT(x);
+		int16_t s[2] = { (int16_t)(p[0] & mask), (int16_t)(p[1] & mask) };
+		uint32_t f0 = (uint16_t)p[0] & (uint16_t)~mask;
+		uint32_t f1 = (uint16_t)p[1] & (uint16_t)~mask;
+		const uint32_t *vc = noise_wcorners(c, s, x, w, seed, 2);
+		if ((f0 | f1) == 0u)
+			return vc[0];
+		if (flags & NOISE_FADE5) {
+			f0 = noise_wfade5(f0, x);
+			f1 = noise_wfade5(f1, x);
+			uint32_t b0 = noise_wstep(vc[0], vc[2], f0, x);
+			uint32_t b1 = noise_wstep(vc[1], vc[3], f0, x);
+			return noise_wstep(b0, b1, f1, x);
+		}
+		if (flags & NOISE_FADE) {
+			f0 = noise_wfade(f0, x);
+			f1 = noise_wfade(f1, x);
+			uint32_t b0 = noise_wstep(vc[0], vc[2], f0, x);
+			uint32_t b1 = noise_wstep(vc[1], vc[3], f0, x);
+			return noise_wstep(b0, b1, f1, x);
+		}
+	}
 	int16_t s[4];
 	uint32_t f[4], v[16];
 	noise_wcell(s, f, p, x, flags, dim);
@@ -555,6 +595,8 @@ static inline uint32_t
 noise_wpoint_c_periodic(noise_wcache_t *c, const int16_t *p, unsigned x, unsigned w,
                         unsigned seed, uint8_t dim, unsigned flags, uint8_t period_shift)
 {
+	if (period_shift == 0u || x > period_shift)
+		return noise_wpoint_c(c, p, x, w, seed, dim, flags);
 	int16_t s[4];
 	uint32_t f[4], v[16];
 	noise_wcell(s, f, p, x, flags, dim);
