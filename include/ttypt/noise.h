@@ -31,6 +31,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(__wasm_simd128__)
+#include <wasm_simd128.h>
+#endif
+
 #ifdef __has_include
   #if __has_include(<xxhash.h>)
     /* Inline the implementation: a bare XXH32 reference becomes an
@@ -68,6 +72,12 @@ ttypt_noise_mix32(const void *key, size_t len, uint32_t seed)
 #define TTYPT_NOISE_HASH ttypt_noise_mix32
 #endif
 
+#if defined(XXH_VERSION_NUMBER) && (!defined(__BYTE_ORDER__) || __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
+#define NOISE_FAST_XXH32_4B 1
+#else
+#define NOISE_FAST_XXH32_4B 0
+#endif
+
 #define NOISE_MAX ((uint32_t) -1)
 #define NOISE_MAX_DIM 4u
 #define NOISE_DEFAULT_VSHIFT 8u
@@ -86,10 +96,101 @@ noise_fdiv(int a, int b)
 	return (a ^ b) < 0 && (d * b != a) ? d - 1 : d;
 }
 
+/* Pack 2D lattice coordinate (p0, p1) into little-endian 4-byte key */
+static inline uint32_t
+noise_pack2(int16_t p0, int16_t p1)
+{
+	return (uint32_t)(uint16_t)p0 | ((uint32_t)(uint16_t)p1 << 16u);
+}
+
+/* Branchless 4-byte XXH32 matching XXH32(int16_t[2]{p0,p1}, 4, seed) bit-for-bit */
+static inline uint32_t
+noise_hash2_1(int16_t p0, int16_t p1, uint32_t seed)
+{
+#if NOISE_FAST_XXH32_4B
+	uint32_t val = noise_pack2(p0, p1);
+	uint32_t h = seed + 0x165667B1u + 4u;
+	h += val * 0xC2B2AE3Du;
+	h = ((h << 17u) | (h >> 15u)) * 0x27D4EB2Fu;
+	h ^= h >> 15u;
+	h *= 0x85EBCA77u;
+	h ^= h >> 13u;
+	h *= 0xC2B2AE3Du;
+	h ^= h >> 16u;
+	return h;
+#else
+	int16_t k[2] = { p0, p1 };
+	return TTYPT_NOISE_HASH(k, sizeof(k), seed);
+#endif
+}
+
+#if NOISE_FAST_XXH32_4B && defined(__wasm_simd128__)
+/* Register-resident 4-wide WASM SIMD128 4-byte XXH32 hash + right-shift by w. */
+static inline v128_t
+noise_hash2_v128(v128_t vk, uint32_t seed, unsigned w)
+{
+	v128_t vh = wasm_i32x4_splat((int32_t)(seed + 0x165667B5u));
+	const v128_t p3 = wasm_i32x4_splat((int32_t)0xC2B2AE3Du);
+	const v128_t p4 = wasm_i32x4_splat((int32_t)0x27D4EB2Fu);
+	const v128_t p2 = wasm_i32x4_splat((int32_t)0x85EBCA77u);
+	vh = wasm_i32x4_add(vh, wasm_i32x4_mul(vk, p3));
+	vh = wasm_v128_or(wasm_i32x4_shl(vh, 17), wasm_u32x4_shr(vh, 15));
+	vh = wasm_i32x4_mul(vh, p4);
+	vh = wasm_v128_xor(vh, wasm_u32x4_shr(vh, 15));
+	vh = wasm_i32x4_mul(vh, p2);
+	vh = wasm_v128_xor(vh, wasm_u32x4_shr(vh, 13));
+	vh = wasm_i32x4_mul(vh, p3);
+	vh = wasm_v128_xor(vh, wasm_u32x4_shr(vh, 16));
+	if (w >= 32u)
+		return wasm_i32x4_splat(0);
+	if (w > 0u)
+		vh = wasm_u32x4_shr(vh, w);
+	return vh;
+}
+#endif
+
+/* 4-wide 4-byte XXH32 hash + right-shift by w. Bit-exact with noise_r(p, seed, w, 2). */
+static inline void
+noise_hash2_4x(const uint32_t packed[4], uint32_t seed, unsigned w, uint32_t out[4])
+{
+#if NOISE_FAST_XXH32_4B && defined(__wasm_simd128__)
+	wasm_v128_store(out, noise_hash2_v128(wasm_v128_load(packed), seed, w));
+#elif NOISE_FAST_XXH32_4B
+	const uint32_t base = seed + 0x165667B5u;
+	if (w >= 32u) {
+		out[0] = out[1] = out[2] = out[3] = 0u;
+		return;
+	}
+	for (int i = 0; i < 4; i++) {
+		uint32_t h = base + packed[i] * 0xC2B2AE3Du;
+		h = ((h << 17u) | (h >> 15u)) * 0x27D4EB2Fu;
+		h ^= h >> 15u;
+		h *= 0x85EBCA77u;
+		h ^= h >> 13u;
+		h *= 0xC2B2AE3Du;
+		h ^= h >> 16u;
+		out[i] = h >> w;
+	}
+#else
+	for (int i = 0; i < 4; i++) {
+		int16_t k0 = (int16_t)(packed[i] & 0xFFFFu);
+		int16_t k1 = (int16_t)(packed[i] >> 16u);
+		uint32_t h = noise_hash2_1(k0, k1, seed);
+		out[i] = (w >= 32u) ? 0u : (h >> w);
+	}
+#endif
+}
+
 /* Deterministic random value for an N-dimensional point p */
 static inline uint32_t
 noise_r(int16_t *p, unsigned seed, unsigned w, uint8_t dim)
 {
+#if NOISE_FAST_XXH32_4B
+	if (dim == 2u) {
+		uint32_t v = noise_hash2_1(p[0], p[1], seed);
+		return (uint32_t)(((long long unsigned) v) >> w);
+	}
+#endif
 	register uint32_t v = TTYPT_NOISE_HASH(p, sizeof(int16_t) * dim, seed);
 	return ((long long unsigned) v) >> w;
 }
@@ -102,14 +203,23 @@ noise_get_v(uint32_t *v, int16_t *s, uint16_t x, unsigned w, unsigned seed, uint
 	if (dim == 2u) {
 		int16_t s0 = s[0], s1 = s[1];
 		int16_t s0d = (int16_t)(s0 + d), s1d = (int16_t)(s1 + d);
-		int16_t c0[2] = { s0,  s1  };
-		int16_t c1[2] = { s0,  s1d };
-		int16_t c2[2] = { s0d, s1  };
-		int16_t c3[2] = { s0d, s1d };
-		v[0] = noise_r(c0, seed, w, 2);
-		v[1] = noise_r(c1, seed, w, 2);
-		v[2] = noise_r(c2, seed, w, 2);
-		v[3] = noise_r(c3, seed, w, 2);
+#if NOISE_FAST_XXH32_4B && defined(__wasm_simd128__)
+		v128_t vk = wasm_i32x4_make(
+			(int32_t)noise_pack2(s0,  s1),
+			(int32_t)noise_pack2(s0,  s1d),
+			(int32_t)noise_pack2(s0d, s1),
+			(int32_t)noise_pack2(s0d, s1d));
+		wasm_v128_store(v, noise_hash2_v128(vk, seed, w));
+#else
+		if (w >= 32u) {
+			v[0] = v[1] = v[2] = v[3] = 0u;
+		} else {
+			v[0] = noise_hash2_1(s0,  s1,  seed) >> w;
+			v[1] = noise_hash2_1(s0,  s1d, seed) >> w;
+			v[2] = noise_hash2_1(s0d, s1,  seed) >> w;
+			v[3] = noise_hash2_1(s0d, s1d, seed) >> w;
+		}
+#endif
 		return;
 	}
 	int16_t va[NOISE_MAX_DIM * (1u << NOISE_MAX_DIM)];
@@ -387,12 +497,52 @@ noise_wfade(uint32_t f, unsigned x)
 	return (uint32_t) (((uint64_t) f * f * ((3ull << x) - 2ull * f)) >> (2 * x));
 }
 
+/* Exact 512-entry L1 LUT of Perlin quintic fade5 Q16 output for all x <= 9 (f < 2^x).
+ * For x <= 9 and f < (1u << x), t = f << (16 - x) == (f << (9 - x)) << 7, so
+ * noise_wfade5(f, x) == s_noise_fade5_q16_lut[f << (9u - x)] >> (16u - x) bit-for-bit. */
+static const uint16_t s_noise_fade5_q16_lut[512] = {
+	    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     9,     9,     9,
+	   19,    19,    18,    28,    28,    37,    46,    46,    55,    64,    74,    83,    91,   100,   118,   127,
+	  145,   153,   171,   180,   197,   214,   231,   248,   274,   291,   317,   333,   358,   384,   408,   433,
+	  466,   491,   524,   548,   580,   612,   644,   685,   716,   756,   795,   835,   874,   912,   959,  1005,
+	 1052,  1097,  1143,  1188,  1241,  1293,  1346,  1398,  1457,  1508,  1567,  1625,  1691,  1749,  1814,  1878,
+	 1950,  2014,  2085,  2155,  2225,  2294,  2371,  2447,  2522,  2605,  2679,  2761,  2849,  2929,  3016,  3102,
+	 3196,  3281,  3373,  3464,  3562,  3659,  3755,  3851,  3953,  4054,  4155,  4262,  4368,  4473,  4578,  4689,
+	 4806,  4915,  5030,  5144,  5265,  5377,  5503,  5620,  5744,  5866,  5995,  6122,  6248,  6380,  6511,  6648,
+	 6784,  6918,  7051,  7190,  7335,  7471,  7613,  7760,  7907,  8051,  8202,  8351,  8498,  8651,  8809,  8959,
+	 9121,  9274,  9433,  9591,  9753,  9920, 10080, 10250, 10413, 10581, 10753, 10924, 11093, 11267, 11439, 11615,
+	11796, 11970, 12148, 12330, 12510, 12695, 12878, 13065, 13251, 13435, 13623, 13814, 14004, 14198, 14391, 14581,
+	14781, 14973, 15169, 15369, 15567, 15769, 15969, 16172, 16373, 16578, 16786, 16987, 17196, 17404, 17615, 17824,
+	18036, 18245, 18458, 18669, 18883, 19095, 19315, 19528, 19749, 19967, 20184, 20403, 20625, 20844, 21067, 21287,
+	21515, 21735, 21958, 22184, 22412, 22637, 22865, 23091, 23319, 23549, 23777, 24007, 24240, 24470, 24702, 24931,
+	25167, 25396, 25632, 25865, 26100, 26332, 26566, 26802, 27040, 27275, 27512, 27746, 27987, 28220, 28459, 28695,
+	28937, 29173, 29414, 29652, 29891, 30128, 30370, 30605, 30846, 31087, 31326, 31566, 31804, 32046, 32286, 32526,
+	32768, 33006, 33245, 33486, 33727, 33965, 34205, 34444, 34685, 34923, 35161, 35400, 35640, 35880, 36118, 36355,
+	36598, 36833, 37072, 37308, 37545, 37782, 38019, 38257, 38491, 38726, 38964, 39196, 39432, 39667, 39899, 40132,
+	40368, 40597, 40830, 41062, 41292, 41521, 41753, 41982, 42212, 42437, 42666, 42894, 43119, 43344, 43572, 43793,
+	44020, 44241, 44464, 44684, 44906, 45125, 45347, 45565, 45783, 46000, 46216, 46432, 46647, 46862, 47073, 47287,
+	47500, 47708, 47917, 48128, 48335, 48541, 48746, 48950, 49157, 49360, 49562, 49763, 49963, 50162, 50361, 50555,
+	50754, 50946, 51141, 51334, 51526, 51717, 51907, 52093, 52281, 52467, 52653, 52836, 53020, 53198, 53382, 53558,
+	53739, 53913, 54091, 54262, 54437, 54608, 54778, 54947, 55117, 55282, 55449, 55612, 55776, 55936, 56097, 56254,
+	56414, 56568, 56724, 56877, 57031, 57181, 57330, 57479, 57625, 57771, 57916, 58057, 58198, 58338, 58478, 58614,
+	58752, 58884, 59018, 59148, 59280, 59406, 59535, 59660, 59786, 59907, 60029, 60149, 60268, 60384, 60501, 60616,
+	60729, 60839, 60951, 61058, 61165, 61271, 61376, 61478, 61579, 61678, 61777, 61874, 61970, 62064, 62157, 62247,
+	62339, 62426, 62514, 62598, 62683, 62766, 62848, 62927, 63006, 63083, 63159, 63232, 63306, 63377, 63447, 63517,
+	63585, 63649, 63715, 63777, 63840, 63900, 63961, 64018, 64075, 64129, 64185, 64237, 64289, 64338, 64388, 64436,
+	64484, 64528, 64572, 64614, 64657, 64697, 64736, 64775, 64812, 64847, 64883, 64915, 64949, 64979, 65010, 65040,
+	65069, 65094, 65121, 65146, 65171, 65193, 65216, 65236, 65258, 65277, 65296, 65313, 65331, 65346, 65361, 65375,
+	65390, 65401, 65414, 65425, 65437, 65445, 65456, 65463, 65472, 65479, 65486, 65491, 65499, 65503, 65508, 65512,
+	65516, 65518, 65522, 65524, 65527, 65528, 65530, 65531, 65532, 65533, 65534, 65534, 65534, 65534, 65534, 65534
+};
+
 /* Ken Perlin's quintic polynomial: 6t^5 - 15t^4 + 10t^3.
  * First and second derivatives are zero at 0 and 1, ensuring C^2 continuity.
  * Input f in [0, 2^x), returns value in [0, 2^x). */
 static inline uint32_t
 noise_wfade5(uint32_t f, unsigned x)
 {
+	if (x <= 9u && f < (1u << x))
+		return (uint32_t)s_noise_fade5_q16_lut[f << (9u - x)] >> (16u - x);
 	uint64_t t = ((uint64_t) f << 16) >> x;
 	if (t > 65536ull) t = 65536ull;
 	int64_t inner1 = ((int64_t) t * 6 - 983040ll);
@@ -603,6 +753,232 @@ noise_wpoint_c_periodic(noise_wcache_t *c, const int16_t *p, unsigned x, unsigne
 	memcpy(v, noise_wcorners_periodic(c, s, x, w, seed, dim, period_shift), sizeof(uint32_t) << dim);
 	noise_wreduce(v, f, x, dim, dim, flags);
 	return v[0];
+}
+
+#if defined(__wasm_simd128__)
+/* Register-resident 4-wide WASM SIMD128 Perlin quintic fade matching noise_wfade5(f, x) */
+static inline v128_t
+noise_wfade5_v128(v128_t vf, unsigned x)
+{
+	v128_t vt;
+	const v128_t v65536 = wasm_i32x4_splat(65536);
+	if (x <= 16u) {
+		uint32_t max_f = 1u << x;
+		v128_t vmaxf = wasm_i32x4_splat((int32_t)max_f);
+		v128_t vfc = wasm_u32x4_min(vf, vmaxf);
+		vt = wasm_i32x4_shl(vfc, 16u - x);
+	} else {
+		vt = wasm_u32x4_shr(vf, x - 16u);
+		vt = wasm_u32x4_min(vt, v65536);
+	}
+	/* neg_inner1 = 983040 - 6*t in [589824..983040] (strictly positive u32) */
+	v128_t v6t = wasm_i32x4_add(wasm_i32x4_shl(vt, 2), wasm_i32x4_shl(vt, 1));
+	v128_t vneg1 = wasm_i32x4_sub(wasm_i32x4_splat(983040), v6t);
+	const v128_t v65535_64 = wasm_i64x2_splat(65535);
+
+	/* pos = neg_inner1 * t (u64), inner2 = 655360 - ((pos + 65535) >> 16) */
+	v128_t p_lo = wasm_u64x2_shr(wasm_i64x2_add(wasm_u64x2_extmul_low_u32x4(vneg1, vt), v65535_64), 16);
+	v128_t p_hi = wasm_u64x2_shr(wasm_i64x2_add(wasm_u64x2_extmul_high_u32x4(vneg1, vt), v65535_64), 16);
+	v128_t vpos = wasm_i32x4_shuffle(p_lo, p_hi, 0, 2, 4, 6);
+	v128_t vinner2 = wasm_i32x4_sub(wasm_i32x4_splat(655360), vpos);
+
+	/* t2 = (t * t) >> 16 */
+	v128_t t2_lo = wasm_u64x2_shr(wasm_u64x2_extmul_low_u32x4(vt, vt), 16);
+	v128_t t2_hi = wasm_u64x2_shr(wasm_u64x2_extmul_high_u32x4(vt, vt), 16);
+	v128_t vt2 = wasm_i32x4_shuffle(t2_lo, t2_hi, 0, 2, 4, 6);
+
+	/* t3 = (t2 * t) >> 16 */
+	v128_t t3_lo = wasm_u64x2_shr(wasm_u64x2_extmul_low_u32x4(vt2, vt), 16);
+	v128_t t3_hi = wasm_u64x2_shr(wasm_u64x2_extmul_high_u32x4(vt2, vt), 16);
+	v128_t vt3 = wasm_i32x4_shuffle(t3_lo, t3_hi, 0, 2, 4, 6);
+
+	/* faded_q16 = (inner2 * t3) >> 16 */
+	v128_t fq_lo = wasm_u64x2_shr(wasm_u64x2_extmul_low_u32x4(vinner2, vt3), 16);
+	v128_t fq_hi = wasm_u64x2_shr(wasm_u64x2_extmul_high_u32x4(vinner2, vt3), 16);
+	v128_t vfq = wasm_i32x4_shuffle(fq_lo, fq_hi, 0, 2, 4, 6);
+
+	return (x <= 16u) ? wasm_u32x4_shr(vfq, 16u - x) : wasm_i32x4_shl(vfq, x - 16u);
+}
+
+/* Register-resident 4-wide WASM SIMD128 linear interpolation matching noise_wstep(v0, v1, f, x) */
+static inline v128_t
+noise_wstep_v128(v128_t vv0, v128_t vv1, v128_t vf, unsigned x)
+{
+	v128_t neg = wasm_u32x4_lt(vv1, vv0);
+	v128_t d   = wasm_v128_bitselect(wasm_i32x4_sub(vv0, vv1), wasm_i32x4_sub(vv1, vv0), neg);
+	uint64_t rmask = (x < 64u) ? ((1ull << x) - 1ull) : ~0ull;
+	v128_t vrm = wasm_i64x2_splat((int64_t)rmask);
+	v128_t neg_lo = wasm_i64x2_extend_low_i32x4(neg);
+	v128_t neg_hi = wasm_i64x2_extend_high_i32x4(neg);
+	v128_t p_lo = wasm_u64x2_extmul_low_u32x4(d, vf);
+	v128_t p_hi = wasm_u64x2_extmul_high_u32x4(d, vf);
+	p_lo = wasm_u64x2_shr(wasm_i64x2_add(p_lo, wasm_v128_and(neg_lo, vrm)), x);
+	p_hi = wasm_u64x2_shr(wasm_i64x2_add(p_hi, wasm_v128_and(neg_hi, vrm)), x);
+	v128_t mag = wasm_i32x4_shuffle(p_lo, p_hi, 0, 2, 4, 6);
+	return wasm_v128_bitselect(wasm_i32x4_sub(vv0, mag), wasm_i32x4_add(vv0, mag), neg);
+}
+/* Fast 4-wide WASM SIMD128 linear interpolation using single 32-bit i32x4.mul.
+ * Exact when vv0, vv1 <= 0x00FFFFFF (i.e. w >= 8) and x <= 8 (vf < 2^x <= 255):
+ * max(d * f + rmask) = 16777215 * 255 + 255 = 4278190080 <= UINT32_MAX. */
+static inline v128_t
+noise_wstep_v128_u24(v128_t vv0, v128_t vv1, v128_t vf, unsigned x)
+{
+	v128_t neg = wasm_u32x4_lt(vv1, vv0);
+	v128_t d   = wasm_v128_bitselect(wasm_i32x4_sub(vv0, vv1), wasm_i32x4_sub(vv1, vv0), neg);
+	v128_t p   = wasm_i32x4_mul(d, vf);
+	v128_t vrm = wasm_i32x4_splat((int32_t)((1u << x) - 1u));
+	v128_t mag = wasm_u32x4_shr(wasm_i32x4_add(p, wasm_v128_and(neg, vrm)), x);
+	return wasm_v128_bitselect(wasm_i32x4_sub(vv0, mag), wasm_i32x4_add(vv0, mag), neg);
+}
+#endif
+
+/* 4-wide bit-exact Perlin quintic fade matching noise_wfade5(f[i], x) */
+static inline void
+noise_wfade5_4x(const uint32_t f[4], unsigned x, uint32_t out[4])
+{
+	if (x <= 9u) {
+		const uint32_t lim = 1u << x;
+		const unsigned lsh = 9u - x;
+		const unsigned rsh = 16u - x;
+		if ((f[0] | f[1] | f[2] | f[3]) < lim) {
+			out[0] = (uint32_t)s_noise_fade5_q16_lut[f[0] << lsh] >> rsh;
+			out[1] = (uint32_t)s_noise_fade5_q16_lut[f[1] << lsh] >> rsh;
+			out[2] = (uint32_t)s_noise_fade5_q16_lut[f[2] << lsh] >> rsh;
+			out[3] = (uint32_t)s_noise_fade5_q16_lut[f[3] << lsh] >> rsh;
+			return;
+		}
+	}
+	for (int i = 0; i < 4; i++)
+		out[i] = noise_wfade5(f[i], x);
+}
+
+/* 4-wide bit-exact fixed-point linear interpolation matching noise_wstep(v0[i], v1[i], f[i], x) */
+static inline void
+noise_wstep_4x(const uint32_t v0[4], const uint32_t v1[4], const uint32_t f[4], unsigned x, uint32_t out[4])
+{
+#if defined(__wasm_simd128__)
+	if (x <= 8u && ((v0[0] | v0[1] | v0[2] | v0[3] | v1[0] | v1[1] | v1[2] | v1[3]) <= 0x00FFFFFFu) &&
+	    ((f[0] | f[1] | f[2] | f[3]) < (1u << x))) {
+		wasm_v128_store(out, noise_wstep_v128_u24(wasm_v128_load(v0), wasm_v128_load(v1), wasm_v128_load(f), x));
+		return;
+	}
+#endif
+	for (int i = 0; i < 4; i++)
+		out[i] = noise_wstep(v0[i], v1[i], f[i], x);
+}
+
+/* 4-wide 2D wrapped point query: bit-exact with 4 calls to
+ * noise_wpoint_c(c, {py[i], px[i]}, x, w, seed, 2, flags). */
+static inline void
+noise_wpoint_2d_4x(noise_wcache_t *c, const int16_t py[4], const int16_t px[4],
+                   unsigned x, unsigned w, unsigned seed, unsigned flags, uint32_t out[4])
+{
+	if (x == 0u) {
+#if NOISE_FAST_XXH32_4B && defined(__wasm_simd128__)
+		v128_t vk = wasm_i32x4_make(
+			(int32_t)noise_pack2(py[0], px[0]),
+			(int32_t)noise_pack2(py[1], px[1]),
+			(int32_t)noise_pack2(py[2], px[2]),
+			(int32_t)noise_pack2(py[3], px[3]));
+		wasm_v128_store(out, noise_hash2_v128(vk, seed, w));
+#else
+		for (int i = 0; i < 4; i++)
+			out[i] = (w >= 32u) ? 0u : (noise_hash2_1(py[i], px[i], seed) >> w);
+#endif
+		return;
+	}
+	if ((flags & (NOISE_FADE | NOISE_FADE5)) != NOISE_FADE5) {
+		for (int i = 0; i < 4; i++) {
+			int16_t p[2] = { py[i], px[i] };
+			out[i] = noise_wpoint_c(c, p, x, w, seed, 2, flags);
+		}
+		return;
+	}
+
+	const uint16_t mask = COORDMASK_LSHIFT(x);
+	const uint16_t lo_mask = (uint16_t)~mask;
+	int16_t sy[4], sx[4];
+	uint32_t f0[4], f1[4];
+	for (int i = 0; i < 4; i++) {
+		sy[i] = (int16_t)(py[i] & mask);
+		sx[i] = (int16_t)(px[i] & mask);
+		f0[i] = (uint16_t)py[i] & lo_mask;
+		f1[i] = (uint16_t)px[i] & lo_mask;
+	}
+
+#if defined(__wasm_simd128__)
+	if (x <= 8u && w >= 8u) {
+		v128_t vv00, vv01, vv10, vv11;
+		if (sy[0] == sy[1] && sy[0] == sy[2] && sy[0] == sy[3] &&
+		    sx[0] == sx[1] && sx[0] == sx[2] && sx[0] == sx[3]) {
+			int16_t s[2] = { sy[0], sx[0] };
+			const uint32_t *vc = noise_wcorners(c, s, x, w, seed, 2);
+			vv00 = wasm_i32x4_splat((int32_t)vc[0]);
+			vv01 = wasm_i32x4_splat((int32_t)vc[1]);
+			vv10 = wasm_i32x4_splat((int32_t)vc[2]);
+			vv11 = wasm_i32x4_splat((int32_t)vc[3]);
+		} else {
+			uint32_t v00[4], v01[4], v10[4], v11[4];
+			for (int i = 0; i < 4; i++) {
+				if (i > 0 && sy[i] == sy[i - 1] && sx[i] == sx[i - 1]) {
+					v00[i] = v00[i - 1]; v01[i] = v01[i - 1];
+					v10[i] = v10[i - 1]; v11[i] = v11[i - 1];
+				} else {
+					int16_t s[2] = { sy[i], sx[i] };
+					const uint32_t *vc = noise_wcorners(c, s, x, w, seed, 2);
+					v00[i] = vc[0]; v01[i] = vc[1]; v10[i] = vc[2]; v11[i] = vc[3];
+				}
+			}
+			vv00 = wasm_v128_load(v00);
+			vv01 = wasm_v128_load(v01);
+			vv10 = wasm_v128_load(v10);
+			vv11 = wasm_v128_load(v11);
+		}
+		const unsigned lsh = 9u - x;
+		const unsigned rsh = 16u - x;
+		v128_t ff0 = wasm_u32x4_shr(wasm_i32x4_make(
+			(int32_t)s_noise_fade5_q16_lut[f0[0] << lsh],
+			(int32_t)s_noise_fade5_q16_lut[f0[1] << lsh],
+			(int32_t)s_noise_fade5_q16_lut[f0[2] << lsh],
+			(int32_t)s_noise_fade5_q16_lut[f0[3] << lsh]), rsh);
+		v128_t ff1 = wasm_u32x4_shr(wasm_i32x4_make(
+			(int32_t)s_noise_fade5_q16_lut[f1[0] << lsh],
+			(int32_t)s_noise_fade5_q16_lut[f1[1] << lsh],
+			(int32_t)s_noise_fade5_q16_lut[f1[2] << lsh],
+			(int32_t)s_noise_fade5_q16_lut[f1[3] << lsh]), rsh);
+		v128_t b0  = noise_wstep_v128_u24(vv00, vv10, ff0, x);
+		v128_t b1  = noise_wstep_v128_u24(vv01, vv11, ff0, x);
+		wasm_v128_store(out, noise_wstep_v128_u24(b0, b1, ff1, x));
+		return;
+	}
+#endif
+	if (sy[0] == sy[1] && sy[0] == sy[2] && sy[0] == sy[3] &&
+	    sx[0] == sx[1] && sx[0] == sx[2] && sx[0] == sx[3]) {
+		int16_t s[2] = { sy[0], sx[0] };
+		const uint32_t *vc = noise_wcorners(c, s, x, w, seed, 2);
+		uint32_t c00 = vc[0], c01 = vc[1], c10 = vc[2], c11 = vc[3];
+		for (int i = 0; i < 4; i++) {
+			uint32_t ff0 = noise_wfade5(f0[i], x);
+			uint32_t ff1 = noise_wfade5(f1[i], x);
+			uint32_t b0 = noise_wstep(c00, c10, ff0, x);
+			uint32_t b1 = noise_wstep(c01, c11, ff0, x);
+			out[i] = noise_wstep(b0, b1, ff1, x);
+		}
+	} else {
+		uint32_t c00 = 0, c01 = 0, c10 = 0, c11 = 0;
+		for (int i = 0; i < 4; i++) {
+			if (i == 0 || sy[i] != sy[i - 1] || sx[i] != sx[i - 1]) {
+				int16_t s[2] = { sy[i], sx[i] };
+				const uint32_t *vc = noise_wcorners(c, s, x, w, seed, 2);
+				c00 = vc[0]; c01 = vc[1]; c10 = vc[2]; c11 = vc[3];
+			}
+			uint32_t ff0 = noise_wfade5(f0[i], x);
+			uint32_t ff1 = noise_wfade5(f1[i], x);
+			uint32_t b0 = noise_wstep(c00, c10, ff0, x);
+			uint32_t b1 = noise_wstep(c01, c11, ff0, x);
+			out[i] = noise_wstep(b0, b1, ff1, x);
+		}
+	}
 }
 
 /* Row stepper: out[k] = noise_wpoint_n(p0 + k * dstep along the LAST axis),

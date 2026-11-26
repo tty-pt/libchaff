@@ -1084,6 +1084,40 @@ chaff_rot2d_i32_q15(int32_t *x, int32_t *y, int32_t cos_q15, int32_t sin_q15)
 	*y = (int32_t)((x0 * sin_q15 + y0 * cos_q15) >> 15);
 }
 
+/* 4-wide SIMD parameterized 2D fixed-point Q15 rotation for int32_t coordinates.
+ * Bit-exact with 4 calls to chaff_rot2d_i32_q15. */
+static inline void
+chaff_rot2d_i32_q15_4x(int32_t x[4], int32_t y[4], int32_t cos_q15, int32_t sin_q15)
+{
+#if defined(__wasm_simd128__)
+	v128_t vx = wasm_v128_load(x);
+	v128_t vy = wasm_v128_load(y);
+	v128_t vc = wasm_i32x4_splat(cos_q15);
+	v128_t vs = wasm_i32x4_splat(sin_q15);
+	v128_t nx_lo = wasm_i64x2_shr(
+		wasm_i64x2_sub(wasm_i64x2_extmul_low_i32x4(vx, vc),
+		               wasm_i64x2_extmul_low_i32x4(vy, vs)), 15);
+	v128_t nx_hi = wasm_i64x2_shr(
+		wasm_i64x2_sub(wasm_i64x2_extmul_high_i32x4(vx, vc),
+		               wasm_i64x2_extmul_high_i32x4(vy, vs)), 15);
+	v128_t ny_lo = wasm_i64x2_shr(
+		wasm_i64x2_add(wasm_i64x2_extmul_low_i32x4(vx, vs),
+		               wasm_i64x2_extmul_low_i32x4(vy, vc)), 15);
+	v128_t ny_hi = wasm_i64x2_shr(
+		wasm_i64x2_add(wasm_i64x2_extmul_high_i32x4(vx, vs),
+		               wasm_i64x2_extmul_high_i32x4(vy, vc)), 15);
+	wasm_v128_store(x, wasm_i32x4_shuffle(nx_lo, nx_hi, 0, 2, 4, 6));
+	wasm_v128_store(y, wasm_i32x4_shuffle(ny_lo, ny_hi, 0, 2, 4, 6));
+#else
+	for (int i = 0; i < 4; i++) {
+		int64_t x0 = x[i];
+		int64_t y0 = y[i];
+		x[i] = (int32_t)((x0 * cos_q15 - y0 * sin_q15) >> 15);
+		y[i] = (int32_t)((x0 * sin_q15 + y0 * cos_q15) >> 15);
+	}
+#endif
+}
+
 static inline void
 chaff_rotate_q15(int16_t *x, int16_t *y)
 {
@@ -1230,11 +1264,6 @@ chaff_wpoint_periodic_2d_ex(int32_t x, int32_t y, uint8_t shift, uint8_t period_
 		fy = noise_wfade5(frac_y, shift);
 	}
 
-	int16_t p00[2] = { (int16_t)ky0, (int16_t)kx0 };
-	int16_t p10[2] = { (int16_t)ky0, (int16_t)kx1 };
-	int16_t p01[2] = { (int16_t)ky1, (int16_t)kx0 };
-	int16_t p11[2] = { (int16_t)ky1, (int16_t)kx1 };
-
 	typedef struct {
 		uint16_t kx0, ky0, kx1, ky1;
 		uint32_t seed;
@@ -1252,10 +1281,21 @@ chaff_wpoint_periodic_2d_ex(int32_t x, int32_t y, uint8_t shift, uint8_t period_
 		v01 = pc->v01;
 		v11 = pc->v11;
 	} else {
-		v00 = noise_r(p00, seed, vshift, 2);
-		v10 = noise_r(p10, seed, vshift, 2);
-		v01 = noise_r(p01, seed, vshift, 2);
-		v11 = noise_r(p11, seed, vshift, 2);
+#if NOISE_FAST_XXH32_4B && defined(__wasm_simd128__)
+		v128_t vk = wasm_i32x4_make(
+			(int32_t)noise_pack2((int16_t)ky0, (int16_t)kx0),
+			(int32_t)noise_pack2((int16_t)ky0, (int16_t)kx1),
+			(int32_t)noise_pack2((int16_t)ky1, (int16_t)kx0),
+			(int32_t)noise_pack2((int16_t)ky1, (int16_t)kx1));
+		uint32_t vc[4];
+		wasm_v128_store(vc, noise_hash2_v128(vk, seed, vshift));
+		v00 = vc[0]; v10 = vc[1]; v01 = vc[2]; v11 = vc[3];
+#else
+		v00 = (vshift >= 32u) ? 0u : (noise_hash2_1((int16_t)ky0, (int16_t)kx0, seed) >> vshift);
+		v10 = (vshift >= 32u) ? 0u : (noise_hash2_1((int16_t)ky0, (int16_t)kx1, seed) >> vshift);
+		v01 = (vshift >= 32u) ? 0u : (noise_hash2_1((int16_t)ky1, (int16_t)kx0, seed) >> vshift);
+		v11 = (vshift >= 32u) ? 0u : (noise_hash2_1((int16_t)ky1, (int16_t)kx1, seed) >> vshift);
+#endif
 		pc->kx0 = kx0; pc->ky0 = ky0;
 		pc->kx1 = kx1; pc->ky1 = ky1;
 		pc->seed = seed; pc->vshift = vshift;
@@ -1274,6 +1314,213 @@ chaff_wpoint_periodic_2d(int32_t x, int32_t y, uint8_t shift, uint8_t period_shi
                          uint8_t vshift, uint32_t seed)
 {
 	return chaff_wpoint_periodic_2d_ex(x, y, shift, period_shift, vshift, seed, NOISE_FADE5);
+}
+
+/* 4-wide SIMD continuous 2D periodic octave sampler (NOISE_FADE5).
+ * Bit-exact with 4 calls to chaff_wpoint_periodic_2d(x[i], y[i], ...). */
+static inline void
+chaff_wpoint_periodic_2d_4x(const int32_t x[4], const int32_t y[4],
+                            uint8_t shift, uint8_t period_shift,
+                            uint8_t vshift, uint32_t seed, uint32_t out[4])
+{
+	if (period_shift == 0 || shift > period_shift) {
+		out[0] = out[1] = out[2] = out[3] = 0u;
+		return;
+	}
+	uint32_t period_mask = (period_shift >= 32) ? 0xFFFFFFFFu : ((1u << period_shift) - 1u);
+	uint32_t cell_count_mask = (1u << (period_shift - shift)) - 1u;
+	uint32_t mask_frac = (1u << shift) - 1u;
+
+	uint16_t kx0[4], ky0[4], kx1[4], ky1[4];
+	uint32_t frac_x[4], frac_y[4];
+	for (int i = 0; i < 4; i++) {
+		uint32_t ux = (uint32_t)x[i] & period_mask;
+		uint32_t uy = (uint32_t)y[i] & period_mask;
+		kx0[i] = (uint16_t)(ux >> shift);
+		ky0[i] = (uint16_t)(uy >> shift);
+		kx1[i] = (uint16_t)((kx0[i] + 1u) & cell_count_mask);
+		ky1[i] = (uint16_t)((ky0[i] + 1u) & cell_count_mask);
+		frac_x[i] = ux & mask_frac;
+		frac_y[i] = uy & mask_frac;
+	}
+
+	if (shift == 0u) {
+#if NOISE_FAST_XXH32_4B && defined(__wasm_simd128__)
+		v128_t vk = wasm_i32x4_make(
+			(int32_t)noise_pack2((int16_t)ky0[0], (int16_t)kx0[0]),
+			(int32_t)noise_pack2((int16_t)ky0[1], (int16_t)kx0[1]),
+			(int32_t)noise_pack2((int16_t)ky0[2], (int16_t)kx0[2]),
+			(int32_t)noise_pack2((int16_t)ky0[3], (int16_t)kx0[3]));
+		wasm_v128_store(out, noise_hash2_v128(vk, seed, vshift));
+#else
+		for (int i = 0; i < 4; i++)
+			out[i] = (vshift >= 32u) ? 0u : (noise_hash2_1((int16_t)ky0[i], (int16_t)kx0[i], seed) >> vshift);
+#endif
+		return;
+	}
+
+	typedef struct {
+		uint16_t kx0, ky0, kx1, ky1;
+		uint32_t seed;
+		uint8_t vshift, valid;
+		uint32_t v00, v10, v01, v11;
+	} chaff_per4_cache_t;
+	static _CHAFF_TLS chaff_per4_cache_t s_per4_cache[32];
+	chaff_per4_cache_t *pc = &s_per4_cache[(shift ^ (seed >> 8)) & 31u];
+
+#if defined(__wasm_simd128__)
+	if (shift <= 8u && vshift >= 8u) {
+		v128_t vv00, vv10, vv01, vv11;
+		if (kx0[0] == kx0[1] && kx0[0] == kx0[2] && kx0[0] == kx0[3] &&
+		    ky0[0] == ky0[1] && ky0[0] == ky0[2] && ky0[0] == ky0[3]) {
+			uint32_t c00, c10, c01, c11;
+			if (pc->valid && pc->kx0 == kx0[0] && pc->ky0 == ky0[0] &&
+			    pc->kx1 == kx1[0] && pc->ky1 == ky1[0] &&
+			    pc->seed == seed && pc->vshift == vshift) {
+				c00 = pc->v00; c10 = pc->v10; c01 = pc->v01; c11 = pc->v11;
+			} else {
+				v128_t vk = wasm_i32x4_make(
+					(int32_t)noise_pack2((int16_t)ky0[0], (int16_t)kx0[0]),
+					(int32_t)noise_pack2((int16_t)ky0[0], (int16_t)kx1[0]),
+					(int32_t)noise_pack2((int16_t)ky1[0], (int16_t)kx0[0]),
+					(int32_t)noise_pack2((int16_t)ky1[0], (int16_t)kx1[0]));
+				uint32_t vc[4];
+				wasm_v128_store(vc, noise_hash2_v128(vk, seed, vshift));
+				c00 = vc[0]; c10 = vc[1]; c01 = vc[2]; c11 = vc[3];
+				pc->kx0 = kx0[0]; pc->ky0 = ky0[0];
+				pc->kx1 = kx1[0]; pc->ky1 = ky1[0];
+				pc->seed = seed; pc->vshift = vshift;
+				pc->v00 = c00; pc->v10 = c10; pc->v01 = c01; pc->v11 = c11;
+				pc->valid = 1;
+			}
+			vv00 = wasm_i32x4_splat((int32_t)c00);
+			vv10 = wasm_i32x4_splat((int32_t)c10);
+			vv01 = wasm_i32x4_splat((int32_t)c01);
+			vv11 = wasm_i32x4_splat((int32_t)c11);
+		} else {
+			uint32_t v00[4], v10[4], v01[4], v11[4];
+			for (int i = 0; i < 4; i++) {
+				if (i > 0 && kx0[i] == kx0[i - 1] && ky0[i] == ky0[i - 1]) {
+					v00[i] = v00[i - 1]; v10[i] = v10[i - 1];
+					v01[i] = v01[i - 1]; v11[i] = v11[i - 1];
+				} else if (pc->valid && pc->kx0 == kx0[i] && pc->ky0 == ky0[i] &&
+				           pc->kx1 == kx1[i] && pc->ky1 == ky1[i] &&
+				           pc->seed == seed && pc->vshift == vshift) {
+					v00[i] = pc->v00; v10[i] = pc->v10;
+					v01[i] = pc->v01; v11[i] = pc->v11;
+				} else {
+					v128_t vk = wasm_i32x4_make(
+						(int32_t)noise_pack2((int16_t)ky0[i], (int16_t)kx0[i]),
+						(int32_t)noise_pack2((int16_t)ky0[i], (int16_t)kx1[i]),
+						(int32_t)noise_pack2((int16_t)ky1[i], (int16_t)kx0[i]),
+						(int32_t)noise_pack2((int16_t)ky1[i], (int16_t)kx1[i]));
+					uint32_t vc[4];
+					wasm_v128_store(vc, noise_hash2_v128(vk, seed, vshift));
+					v00[i] = vc[0]; v10[i] = vc[1]; v01[i] = vc[2]; v11[i] = vc[3];
+					pc->kx0 = kx0[i]; pc->ky0 = ky0[i];
+					pc->kx1 = kx1[i]; pc->ky1 = ky1[i];
+					pc->seed = seed; pc->vshift = vshift;
+					pc->v00 = vc[0]; pc->v10 = vc[1]; pc->v01 = vc[2]; pc->v11 = vc[3];
+					pc->valid = 1;
+				}
+			}
+			vv00 = wasm_v128_load(v00);
+			vv10 = wasm_v128_load(v10);
+			vv01 = wasm_v128_load(v01);
+			vv11 = wasm_v128_load(v11);
+		}
+		const unsigned lsh = 9u - shift;
+		const unsigned rsh = 16u - shift;
+		v128_t fx = wasm_u32x4_shr(wasm_i32x4_make(
+			(int32_t)s_noise_fade5_q16_lut[frac_x[0] << lsh],
+			(int32_t)s_noise_fade5_q16_lut[frac_x[1] << lsh],
+			(int32_t)s_noise_fade5_q16_lut[frac_x[2] << lsh],
+			(int32_t)s_noise_fade5_q16_lut[frac_x[3] << lsh]), rsh);
+		v128_t fy = wasm_u32x4_shr(wasm_i32x4_make(
+			(int32_t)s_noise_fade5_q16_lut[frac_y[0] << lsh],
+			(int32_t)s_noise_fade5_q16_lut[frac_y[1] << lsh],
+			(int32_t)s_noise_fade5_q16_lut[frac_y[2] << lsh],
+			(int32_t)s_noise_fade5_q16_lut[frac_y[3] << lsh]), rsh);
+		v128_t b0 = noise_wstep_v128_u24(vv00, vv10, fx, shift);
+		v128_t b1 = noise_wstep_v128_u24(vv01, vv11, fx, shift);
+		wasm_v128_store(out, noise_wstep_v128_u24(b0, b1, fy, shift));
+		return;
+	}
+#endif
+	if (kx0[0] == kx0[1] && kx0[0] == kx0[2] && kx0[0] == kx0[3] &&
+	    ky0[0] == ky0[1] && ky0[0] == ky0[2] && ky0[0] == ky0[3]) {
+		uint32_t c00, c10, c01, c11;
+		if (pc->valid && pc->kx0 == kx0[0] && pc->ky0 == ky0[0] &&
+		    pc->kx1 == kx1[0] && pc->ky1 == ky1[0] &&
+		    pc->seed == seed && pc->vshift == vshift) {
+			c00 = pc->v00; c10 = pc->v10; c01 = pc->v01; c11 = pc->v11;
+		} else {
+#if NOISE_FAST_XXH32_4B && defined(__wasm_simd128__)
+			v128_t vk = wasm_i32x4_make(
+				(int32_t)noise_pack2((int16_t)ky0[0], (int16_t)kx0[0]),
+				(int32_t)noise_pack2((int16_t)ky0[0], (int16_t)kx1[0]),
+				(int32_t)noise_pack2((int16_t)ky1[0], (int16_t)kx0[0]),
+				(int32_t)noise_pack2((int16_t)ky1[0], (int16_t)kx1[0]));
+			uint32_t vc[4];
+			wasm_v128_store(vc, noise_hash2_v128(vk, seed, vshift));
+			c00 = vc[0]; c10 = vc[1]; c01 = vc[2]; c11 = vc[3];
+#else
+			c00 = (vshift >= 32u) ? 0u : (noise_hash2_1((int16_t)ky0[0], (int16_t)kx0[0], seed) >> vshift);
+			c10 = (vshift >= 32u) ? 0u : (noise_hash2_1((int16_t)ky0[0], (int16_t)kx1[0], seed) >> vshift);
+			c01 = (vshift >= 32u) ? 0u : (noise_hash2_1((int16_t)ky1[0], (int16_t)kx0[0], seed) >> vshift);
+			c11 = (vshift >= 32u) ? 0u : (noise_hash2_1((int16_t)ky1[0], (int16_t)kx1[0], seed) >> vshift);
+#endif
+			pc->kx0 = kx0[0]; pc->ky0 = ky0[0];
+			pc->kx1 = kx1[0]; pc->ky1 = ky1[0];
+			pc->seed = seed; pc->vshift = vshift;
+			pc->v00 = c00; pc->v10 = c10; pc->v01 = c01; pc->v11 = c11;
+			pc->valid = 1;
+		}
+		for (int i = 0; i < 4; i++) {
+			uint32_t fx = noise_wfade5(frac_x[i], shift);
+			uint32_t fy = noise_wfade5(frac_y[i], shift);
+			uint32_t b0 = noise_wstep(c00, c10, fx, shift);
+			uint32_t b1 = noise_wstep(c01, c11, fx, shift);
+			out[i] = noise_wstep(b0, b1, fy, shift);
+		}
+	} else {
+		uint32_t c00 = 0, c10 = 0, c01 = 0, c11 = 0;
+		for (int i = 0; i < 4; i++) {
+			if (i == 0 || kx0[i] != kx0[i - 1] || ky0[i] != ky0[i - 1]) {
+				if (pc->valid && pc->kx0 == kx0[i] && pc->ky0 == ky0[i] &&
+				    pc->kx1 == kx1[i] && pc->ky1 == ky1[i] &&
+				    pc->seed == seed && pc->vshift == vshift) {
+					c00 = pc->v00; c10 = pc->v10; c01 = pc->v01; c11 = pc->v11;
+				} else {
+#if NOISE_FAST_XXH32_4B && defined(__wasm_simd128__)
+					v128_t vk = wasm_i32x4_make(
+						(int32_t)noise_pack2((int16_t)ky0[i], (int16_t)kx0[i]),
+						(int32_t)noise_pack2((int16_t)ky0[i], (int16_t)kx1[i]),
+						(int32_t)noise_pack2((int16_t)ky1[i], (int16_t)kx0[i]),
+						(int32_t)noise_pack2((int16_t)ky1[i], (int16_t)kx1[i]));
+					uint32_t vc[4];
+					wasm_v128_store(vc, noise_hash2_v128(vk, seed, vshift));
+					c00 = vc[0]; c10 = vc[1]; c01 = vc[2]; c11 = vc[3];
+#else
+					c00 = (vshift >= 32u) ? 0u : (noise_hash2_1((int16_t)ky0[i], (int16_t)kx0[i], seed) >> vshift);
+					c10 = (vshift >= 32u) ? 0u : (noise_hash2_1((int16_t)ky0[i], (int16_t)kx1[i], seed) >> vshift);
+					c01 = (vshift >= 32u) ? 0u : (noise_hash2_1((int16_t)ky1[i], (int16_t)kx0[i], seed) >> vshift);
+					c11 = (vshift >= 32u) ? 0u : (noise_hash2_1((int16_t)ky1[i], (int16_t)kx1[i], seed) >> vshift);
+#endif
+					pc->kx0 = kx0[i]; pc->ky0 = ky0[i];
+					pc->kx1 = kx1[i]; pc->ky1 = ky1[i];
+					pc->seed = seed; pc->vshift = vshift;
+					pc->v00 = c00; pc->v10 = c10; pc->v01 = c01; pc->v11 = c11;
+					pc->valid = 1;
+				}
+			}
+			uint32_t fx = noise_wfade5(frac_x[i], shift);
+			uint32_t fy = noise_wfade5(frac_y[i], shift);
+			uint32_t b0 = noise_wstep(c00, c10, fx, shift);
+			uint32_t b1 = noise_wstep(c01, c11, fx, shift);
+			out[i] = noise_wstep(b0, b1, fy, shift);
+		}
+	}
 }
 
 /**
@@ -1375,6 +1622,68 @@ chaff_fbm_rotated_2d(const chaff_fbm_opts_t *opts, int32_t x, int32_t y)
 	return acc;
 }
 
+/* 4-wide SIMD struct-driven 2D rotated fractal octave accumulator.
+ * Bit-exact with 4 calls to chaff_fbm_rotated_2d(opts, x[i], y[i]). */
+static inline void
+chaff_fbm_rotated_2d_4x(const chaff_fbm_opts_t *opts,
+                        const int32_t x[4], const int32_t y[4],
+                        int32_t out[4])
+{
+	if (!opts || opts->min_shift > opts->max_shift) {
+		out[0] = out[1] = out[2] = out[3] = 0;
+		return;
+	}
+	unsigned fade_fl = opts->fade_flags ? opts->fade_flags : NOISE_FADE5;
+	if (opts->period_shift != 0u || (fade_fl & (NOISE_FADE | NOISE_FADE5)) != NOISE_FADE5) {
+		for (int i = 0; i < 4; i++)
+			out[i] = chaff_fbm_rotated_2d(opts, x[i], y[i]);
+		return;
+	}
+	static _CHAFF_TLS noise_wcache_t s_fbm4_wcache[64];
+	unsigned vs = (opts->vshift && opts->vshift < 16u) ? (unsigned)opts->vshift : CHAFF_DEFAULT_VSHIFT;
+	unsigned mid_shift = 15u - vs;
+	int32_t mid = (int32_t)(1u << mid_shift);
+	int64_t mid_mask = (int64_t)mid - 1;
+	int32_t ridge_fold = mid >> 1;
+	int16_t base_amp = (opts->base_amp != 0) ? opts->base_amp : CHAFF_DEFAULT_BASE_AMP;
+	uint32_t prime = opts->seed_prime ? opts->seed_prime : CHAFF_SEED_PRIME;
+	int32_t cos_q15 = (opts->cos_q15 != 0 || opts->sin_q15 != 0) ? opts->cos_q15 : CHAFF_ROT_GOLD_COS_Q15;
+	int32_t sin_q15 = (opts->cos_q15 != 0 || opts->sin_q15 != 0) ? opts->sin_q15 : CHAFF_ROT_GOLD_SIN_Q15;
+	uint32_t bank = ((opts->seed_salt ^ (opts->seed >> 12)) & 3u) << 4;
+
+	int32_t cur_x[4] = { x[0], x[1], x[2], x[3] };
+	int32_t cur_y[4] = { y[0], y[1], y[2], y[3] };
+	int32_t acc[4] = { 0, 0, 0, 0 };
+
+	for (int8_t s = (int8_t)opts->max_shift; s >= (int8_t)opts->min_shift; s--) {
+		uint32_t w_q16 = chaff_octave_weight_q16((uint8_t)s, opts->step_q16);
+		if (w_q16 == 0u)
+			break;
+		int16_t amp = chaff_octave_amplitude_ex((uint8_t)s, opts->amp_min_shift, base_amp);
+		uint32_t oct_seed = opts->seed ^ (uint32_t)((uint8_t)s * prime + opts->seed_salt);
+		int16_t py[4] = { (int16_t)cur_y[0], (int16_t)cur_y[1], (int16_t)cur_y[2], (int16_t)cur_y[3] };
+		int16_t px[4] = { (int16_t)cur_x[0], (int16_t)cur_x[1], (int16_t)cur_x[2], (int16_t)cur_x[3] };
+		noise_wcache_t *wc = &s_fbm4_wcache[(bank + ((uint32_t)s & 15u)) & 63u];
+		uint32_t raw[4];
+		noise_wpoint_2d_4x(wc, py, px, (uint8_t)s, vs, oct_seed, NOISE_FADE5, raw);
+		int is_ridged = ((uint8_t)s >= opts->ridged_min_shift);
+		for (int i = 0; i < 4; i++) {
+			int32_t val = (int32_t)(raw[i] >> 16) - mid;
+			if (is_ridged)
+				val = ridge_fold - (val < 0 ? -val : val);
+			int64_t num = ((int64_t)val * amp) << opts->out_shift;
+			/* Exact signed division by power-of-2 mid (truncating toward zero) */
+			int64_t term = (num + ((num >> 63) & mid_mask)) >> mid_shift;
+			if (w_q16 < 65536u)
+				term = (term * (int64_t)w_q16) >> 16;
+			acc[i] += (int32_t)term;
+		}
+		if (s > (int8_t)opts->min_shift)
+			chaff_rot2d_i32_q15_4x(cur_x, cur_y, cos_q15, sin_q15);
+	}
+	out[0] = acc[0]; out[1] = acc[1]; out[2] = acc[2]; out[3] = acc[3];
+}
+
 /* Parameterized 2D rotated fractal octave accumulator with configurable vshift, fade_flags,
  * and fixed-point fractional output shift (out_shift = 4 produces Q12.4). */
 static inline int32_t
@@ -1434,6 +1743,136 @@ chaff_fbm_rotated_2d_step_q12_4(int32_t x, int32_t y,
 		.step_q16 = step_q16
 	};
 	return chaff_fbm_rotated_2d(&opts, x, y);
+}
+
+/* 4-wide SIMD scale-filtered 2D rotated fractal octave accumulator in Q12.4 fixed-point.
+ * Bit-exact with 4 calls to chaff_fbm_rotated_2d_step_q12_4. */
+static inline void
+chaff_fbm_rotated_2d_step_q12_4_4x(const int32_t x[4], const int32_t y[4],
+                                   int32_t step_q16,
+                                   uint8_t min_shift, uint8_t max_shift,
+                                   uint8_t ridged_min_shift,
+                                   uint8_t amp_min_shift, int16_t base_amp,
+                                   uint32_t seed, uint32_t seed_salt,
+                                   int32_t cos_q15, int32_t sin_q15,
+                                   int32_t out[4])
+{
+	if (min_shift > max_shift || base_amp <= 0) {
+		out[0] = out[1] = out[2] = out[3] = 0;
+		return;
+	}
+	chaff_fbm_opts_t opts = {
+		.min_shift = min_shift,
+		.max_shift = max_shift,
+		.ridged_min_shift = ridged_min_shift,
+		.amp_min_shift = amp_min_shift,
+		.base_amp = base_amp,
+		.seed = seed,
+		.seed_salt = seed_salt,
+		.seed_prime = CHAFF_SEED_PRIME,
+		.cos_q15 = cos_q15,
+		.sin_q15 = sin_q15,
+		.vshift = CHAFF_DEFAULT_VSHIFT,
+		.fade_flags = NOISE_FADE5,
+		.out_shift = CHAFF_DEFAULT_OUT_SHIFT,
+		.step_q16 = step_q16
+	};
+	chaff_fbm_rotated_2d_4x(&opts, x, y, out);
+}
+
+/* 4-wide batch 2D analytical gradient noise evaluator.
+ * Reuses cached 2D lattice corners across lanes sharing a cell (with SIMD 4-corner hash on miss).
+ * Bit-exact with 4 calls to chaff_sample_grad_2d(field, wx[i], wy[i]). */
+static inline void
+chaff_grad_noise2d_4x(const chaff_field_t *field,
+                      const int16_t wx[4], const int16_t wy[4],
+                      chaff_sample_2d_t out[4])
+{
+	for (int i = 0; i < 4; i++) {
+		out[i].val = 0;
+		out[i].grad_x = 0;
+		out[i].grad_y = 0;
+	}
+	if (!field || field->dim < 2) return;
+
+	noise_wcache_t cache;
+	for (uint8_t l = 0; l < field->nlayers; l++) {
+		const chaff_layer_t *lay = &field->layers[l];
+		uint32_t seed = chaff_layer_seed(field, lay, l);
+		unsigned x = lay->shift;
+		unsigned vshift = (lay->vshift && lay->vshift < 16u) ? lay->vshift : CHAFF_DEFAULT_VSHIFT;
+		int32_t mid = (int32_t)(1u << (15u - vshift));
+		int32_t ridge_fold = mid >> 1;
+		unsigned amp_shift = 15u - vshift;
+		uint16_t mask = COORDMASK_LSHIFT(x);
+		noise_wcache_init(&cache);
+
+		for (int i = 0; i < 4; i++) {
+			int16_t sx = wx[i], sy = wy[i];
+			if (lay->skew[0]) sx = (int16_t)(sx + sy / lay->skew[0]);
+			if (lay->skew[1]) sy = (int16_t)(sy - sx / lay->skew[1]);
+
+			int16_t cell_x = (int16_t)(sx & mask);
+			int16_t cell_y = (int16_t)(sy & mask);
+			uint32_t fix = (uint16_t)sx & (uint16_t)~mask;
+			uint32_t fiy = (uint16_t)sy & (uint16_t)~mask;
+
+			uint32_t tx = (fix << 16) >> x;
+			uint32_t ty = (fiy << 16) >> x;
+
+			uint64_t ux, uy, du_x, du_y;
+			chaff_eval_fade_and_deriv(tx, field->flags, &ux, &du_x);
+			chaff_eval_fade_and_deriv(ty, field->flags, &uy, &du_y);
+
+			int16_t pt_s[2] = { cell_y, cell_x };
+			const uint32_t *v = noise_wcorners_periodic(&cache, pt_s, x, vshift, seed, 2, lay->period_shift);
+			int64_t v00 = (int64_t)v[0];
+			int64_t v10 = (int64_t)v[1];
+			int64_t v01 = (int64_t)v[2];
+			int64_t v11 = (int64_t)v[3];
+
+			int64_t b0 = v00 + (((v01 - v00) * (int64_t)uy) >> 16);
+			int64_t b1 = v10 + (((v11 - v10) * (int64_t)uy) >> 16);
+			int64_t raw = b0 + (((b1 - b0) * (int64_t)ux) >> 16);
+
+			int64_t dH_dux = b1 - b0;
+			int64_t c0 = v00 + (((v10 - v00) * (int64_t)ux) >> 16);
+			int64_t c1 = v01 + (((v11 - v01) * (int64_t)ux) >> 16);
+			int64_t dH_duy = c1 - c0;
+
+			int64_t gx = (dH_dux * (int64_t)du_x) >> 16;
+			int64_t gy = (dH_duy * (int64_t)du_y) >> 16;
+
+			int32_t sample;
+			int32_t sample_gx, sample_gy;
+			if (lay->amp == 0) {
+				sample = (int32_t)raw;
+				sample_gx = (int32_t)(gx >> x);
+				sample_gy = (int32_t)(gy >> x);
+			} else {
+				int32_t val = (int32_t)(raw >> 16) - mid;
+				if (lay->seed_mode & CHAFF_LAYER_RIDGED) {
+					if (val >= 0) {
+						gx = -gx;
+						gy = -gy;
+					}
+					val = ridge_fold - abs(val);
+				}
+				sample_gx = (int32_t)(((gx >> 16) * (int64_t)lay->amp) >> (amp_shift + x));
+				sample_gy = (int32_t)(((gy >> 16) * (int64_t)lay->amp) >> (amp_shift + x));
+				if (lay->contrast != 0 && lay->contrast != NOISE_CONTRAST_IDENTITY) {
+					val = (val * (int32_t)lay->contrast) >> 8;
+					sample_gx = (sample_gx * (int32_t)lay->contrast) >> 8;
+					sample_gy = (sample_gy * (int32_t)lay->contrast) >> 8;
+				}
+				sample = (val * (int32_t)lay->amp) >> amp_shift;
+			}
+
+			out[i].val += sample;
+			out[i].grad_x = (int16_t)(out[i].grad_x + sample_gx);
+			out[i].grad_y = (int16_t)(out[i].grad_y + sample_gy);
+		}
+	}
 }
 
 /* Generic 2D rotated fractal octave accumulator in Q12.4 fixed-point.

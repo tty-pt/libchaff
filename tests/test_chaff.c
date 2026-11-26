@@ -1086,6 +1086,140 @@ int main(void)
 		printf("PASS: continuous Nyquist scale-space weights and scale-filtered fBm verified\n");
 	}
 
+	/* 22. 4-Wide SIMD Batch Primitives — 10,000-Coordinate Bit-Exact Parity vs Scalar */
+	{
+		uint32_t rng = 0x51A7D411u;
+		#define NEXT_U32() (rng = rng * 1664525u + 1013904223u)
+
+		/* A. noise_hash2_4x, noise_wfade5_4x, noise_wstep_4x across extreme values & shift=1..22 */
+		for (unsigned x = 1; x <= 22; x++) {
+			uint32_t max_f = (x < 31u) ? (1u << x) : 0x7FFFFFFFu;
+			for (int iter = 0; iter < 64; iter++) {
+				uint32_t f[4], v0[4], v1[4], fo[4], so[4], packed[4], ho[4];
+				for (int i = 0; i < 4; i++) {
+					f[i] = (iter == 0 && i == 0) ? 0u
+					     : (iter == 0 && i == 1) ? max_f
+					     : (iter == 0 && i == 2) ? (max_f + 7u)
+					     : (NEXT_U32() % (max_f + 1u));
+					v0[i] = NEXT_U32(); /* full u32 including bit 31 set */
+					v1[i] = NEXT_U32();
+					packed[i] = NEXT_U32();
+				}
+				noise_wfade5_4x(f, x, fo);
+				noise_wstep_4x(v0, v1, fo, x, so);
+				uint32_t seed = NEXT_U32();
+				unsigned w = x & 15u;
+				noise_hash2_4x(packed, seed, w, ho);
+				for (int i = 0; i < 4; i++) {
+					uint32_t ef = noise_wfade5(f[i], x);
+					assert(fo[i] == ef);
+					uint32_t es = noise_wstep(v0[i], v1[i], ef, x);
+					assert(so[i] == es);
+					int16_t p[2] = { (int16_t)(packed[i] & 0xFFFFu), (int16_t)(packed[i] >> 16u) };
+					uint32_t eh = noise_r(p, seed, w, 2);
+					assert(ho[i] == eh);
+				}
+			}
+		}
+
+		/* B. noise_wpoint_2d_4x, chaff_wpoint_periodic_2d_4x, chaff_rot2d_i32_q15_4x,
+		 *    chaff_fbm_rotated_2d_step_q12_4_4x, chaff_grad_noise2d_4x over 10,000 coords (2,500 quads) */
+		noise_wcache_t wc_simd, wc_scal;
+		noise_wcache_init(&wc_simd);
+		noise_wcache_init(&wc_scal);
+
+		static const chaff_layer_t grad_lays[] = {
+			{ .shift = 5, .vshift = 8, .amp = 100, .seed_mode = CHAFF_SEED_SHARED, .skew = { 3, -5 }, .contrast = 320 },
+			{ .shift = 3, .vshift = 8, .amp =  45, .seed_mode = CHAFF_SEED_PER_LAYER | CHAFF_LAYER_RIDGED, .contrast = 256, .period_shift = 8 }
+		};
+		static const chaff_field_t grad_field = {
+			.seed = 0xCAFEBABEu, .dim = 2, .flags = CHAFF_FLAG_FADE5, .nlayers = 2, .layers = grad_lays
+		};
+
+		for (int q = 0; q < 2500; q++) {
+			int32_t x4[4], y4[4];
+			int16_t sx4[4], sy4[4];
+			if (q == 0) {
+				/* int16_t wrap boundaries */
+				x4[0] = -32768; x4[1] = -32767; x4[2] = 32766; x4[3] = 32767;
+				y4[0] =  32767; y4[1] = -32768; y4[2] = 0;     y4[3] = -1;
+			} else if (q < 1250) {
+				/* Coherent row stride (same-cell & cell-boundary crossing) */
+				int32_t bx = (int32_t)(NEXT_U32() & 0x3FFFFu) - 131072;
+				int32_t by = (int32_t)(NEXT_U32() & 0x3FFFFu) - 131072;
+				int32_t stride = 1 << (q & 7);
+				for (int i = 0; i < 4; i++) {
+					x4[i] = bx + i * stride;
+					y4[i] = by;
+				}
+			} else {
+				/* Fully random coordinates across negative & positive world space */
+				for (int i = 0; i < 4; i++) {
+					x4[i] = (int32_t)NEXT_U32() >> 8;
+					y4[i] = (int32_t)NEXT_U32() >> 8;
+				}
+			}
+			for (int i = 0; i < 4; i++) {
+				sx4[i] = (int16_t)x4[i];
+				sy4[i] = (int16_t)y4[i];
+			}
+
+			/* noise_wpoint_2d_4x */
+			unsigned shift = (unsigned)(q % 12);
+			uint32_t seed = 0x13572468u ^ (uint32_t)(q * 2654435761u);
+			uint32_t wp_simd[4];
+			noise_wpoint_2d_4x(&wc_simd, sy4, sx4, shift, 8u, seed, NOISE_FADE5, wp_simd);
+			for (int i = 0; i < 4; i++) {
+				int16_t p[2] = { sy4[i], sx4[i] };
+				uint32_t wp_ref = noise_wpoint_c(&wc_scal, p, shift, 8u, seed, 2, NOISE_FADE5);
+				assert(wp_simd[i] == wp_ref);
+			}
+
+			/* chaff_wpoint_periodic_2d_4x */
+			uint8_t pshift = (uint8_t)(8u + (q % 9)); /* 8..16 */
+			uint8_t oshift = (uint8_t)(q % (pshift + 1u));
+			uint32_t per_simd[4];
+			chaff_wpoint_periodic_2d_4x(x4, y4, oshift, pshift, 8u, seed, per_simd);
+			for (int i = 0; i < 4; i++) {
+				uint32_t per_ref = chaff_wpoint_periodic_2d(x4[i], y4[i], oshift, pshift, 8u, seed);
+				assert(per_simd[i] == per_ref);
+			}
+
+			/* chaff_rot2d_i32_q15_4x */
+			int32_t rx_s[4] = { x4[0], x4[1], x4[2], x4[3] };
+			int32_t ry_s[4] = { y4[0], y4[1], y4[2], y4[3] };
+			chaff_rot2d_i32_q15_4x(rx_s, ry_s, CHAFF_ROT_ATAN_COS_Q15, CHAFF_ROT_ATAN_SIN_Q15);
+			for (int i = 0; i < 4; i++) {
+				int32_t rx = x4[i], ry = y4[i];
+				chaff_rot2d_i32_q15(&rx, &ry, CHAFF_ROT_ATAN_COS_Q15, CHAFF_ROT_ATAN_SIN_Q15);
+				assert(rx_s[i] == rx && ry_s[i] == ry);
+			}
+
+			/* chaff_fbm_rotated_2d_step_q12_4_4x (including partial Nyquist transitions) */
+			int32_t step_q16 = (q % 5 == 0) ? 0 : ((q % 5) * 3 << 15);
+			int32_t fbm_simd[4];
+			chaff_fbm_rotated_2d_step_q12_4_4x(x4, y4, step_q16, 0, 9, 7, 2, 2, seed, 0x3F01u,
+			                                   CHAFF_ROT_ATAN_COS_Q15, CHAFF_ROT_ATAN_SIN_Q15, fbm_simd);
+			for (int i = 0; i < 4; i++) {
+				int32_t fbm_ref = chaff_fbm_rotated_2d_step_q12_4(x4[i], y4[i], step_q16, 0, 9, 7, 2, 2, seed, 0x3F01u,
+				                                                  CHAFF_ROT_ATAN_COS_Q15, CHAFF_ROT_ATAN_SIN_Q15);
+				assert(fbm_simd[i] == fbm_ref);
+			}
+
+			/* chaff_grad_noise2d_4x */
+			chaff_sample_2d_t g_simd[4];
+			chaff_grad_noise2d_4x(&grad_field, sx4, sy4, g_simd);
+			for (int i = 0; i < 4; i++) {
+				chaff_sample_2d_t g_ref = chaff_sample_grad_2d(&grad_field, sx4[i], sy4[i]);
+				assert(g_simd[i].val == g_ref.val);
+				assert(g_simd[i].grad_x == g_ref.grad_x);
+				assert(g_simd[i].grad_y == g_ref.grad_y);
+			}
+		}
+		#undef NEXT_U32
+		printf("PASS: 4-wide SIMD primitives (hash2, wfade5, wstep, wpoint_2d, periodic_2d, rot2d, fbm, grad2d) bit-exact over 10,000 coords\n");
+	}
+
 	printf("=== ALL CANONICAL LIBCHAFF TESTS PASSED ===\n");
 	return 0;
 }
