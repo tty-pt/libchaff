@@ -121,9 +121,9 @@ Traditional procedural noise libraries rely on floating-point arithmetic (`sin`,
   $$c_2 = v_2 + (((v_6 - v_2) \cdot u_z) \gg 16), \quad c_3 = v_3 + (((v_7 - v_3) \cdot u_z) \gg 16)$$
 * On a $32 \times 32$ cell, this cuts corner hashes from 256 down to 8 — a **96.8% reduction in hash operations** while producing bit-exact identical values to point queries.
 
-### D. Scanline & Thread-Local 4-Corner Cell Caching (`noise_scanline_t`, `noise_wcache_t`, `CHAFF_TLS`)
+### D. Scanline & Thread-Local 4-Corner Cell Caching (`noise_scanline_t`, `noise_wcache_t`, `_CHAFF_TLS`)
 * When rasterizing rows of pixels, `noise_scanline_eval_row()` and `noise_wrow()` cache active lattice corners in registers so corners are fetched only when crossing a cell boundary (e.g. 17 corner fetches for 256 pixels at shift 4, rather than 256 independent fetches).
-* For general 2D periodic (`chaff_sample_periodic_2d_opts`) and multi-octave rotated FBM (`chaff_fbm_rotated_2d`) queries, thread-local (`_Thread_local`) 4-corner lattice cell caches retain the evaluated quad corners per octave, eliminating redundant corner hashes across spatially coherent queries while remaining 100% lock-free and race-free across multi-threaded `stele_wq` worker pools.
+* For general 2D periodic (`chaff_wpoint_periodic_2d_ex`, `chaff_wpoint_periodic_2d_4x`) and multi-octave rotated FBM (`chaff_fbm_rotated_2d`) queries, thread-local (`_CHAFF_TLS` / `_Thread_local` / `__thread`) 4-corner lattice cell caches retain the evaluated quad corners per octave, eliminating redundant corner hashes across spatially coherent queries while remaining 100% lock-free and race-free across multi-threaded `stele_wq` worker pools.
 
 ### E. Analytical Spatial Gradients in Registers (Zero Extra Hashes)
 * Determining surface normal slopes ($\frac{\partial H}{\partial x}, \frac{\partial H}{\partial y}, \frac{\partial H}{\partial z}$) traditionally requires finite central differences:
@@ -132,6 +132,10 @@ Traditional procedural noise libraries rely on floating-point arithmetic (`sin`,
 * `chaff_sample_grad_2d()` and `chaff_sample_grad_3d()` differentiate the cubic Hermite smoothstep analytically:
   $$u(t) = t^2(3 - 2t) \implies u'(t) = 6t(1 - t)$$
 * Derivatives are computed in fixed-point integer registers directly alongside the elevation sample. Normal slopes are evaluated with **zero additional corner hashes**, delivering a **3x speedup** over numerical finite differences.
+
+### F. 4-Wide SIMD 2D Batching, `fade5` LUT & VLA-Free 2D Fast Paths
+* Header-only 4-wide batched APIs in `<ttypt/chaff.h>` (`chaff_rot2d_i32_q15_4x`, `chaff_wpoint_periodic_2d_4x`, `chaff_fbm_rotated_2d_4x`, `chaff_fbm_rotated_2d_step_q12_4_4x`, `chaff_grad_noise2d_4x`) and `<ttypt/noise.h>` (`noise_hash2_4x`, `noise_wfade5_4x`, `noise_wstep_4x`, `noise_wpoint_2d_4x`) use WebAssembly SIMD128 (`__wasm_simd128__`) when available with a bit-exact scalar fallback.
+* A 512-entry fixed-point lookup table (`s_noise_fade5_q16_lut`) accelerates `noise_wfade5()` for shifts $x \le 9$, and VLA-free `dim == 2` fast paths in `noise_get_v()` and `noise_wpoint_c()` eliminate stack VLAs on 2D hot loops.
 
 ---
 
@@ -318,8 +322,10 @@ The library provides two primary headers: `<ttypt/chaff.h>` (modern declarative 
 * `chaff_sample_rugged_2d(field, wx, wy)`: Point evaluation with irrational Golden-Ratio rotational skew applied across octaves to break lattice alignment.
 * `chaff_fbm_rotated_2d(&opts, x, y)` / `chaff_fbm_rotated_2d_q12_4(...)`: Parameterized 2D rotated fractal octave accumulator with ridged folding and optional periodic domain wrapping.
 * `chaff_wpoint_periodic_2d(x, y, shift, period_shift, vshift, seed)`: Continuous 2D periodic octave with domain period $2^{\text{period\_shift}}$.
+* `chaff_wpoint_periodic_2d_4x(...)`, `chaff_fbm_rotated_2d_4x(...)`, `chaff_fbm_rotated_2d_step_q12_4_4x(...)`, `chaff_grad_noise2d_4x(...)`: 4-wide SIMD (`__wasm_simd128__` + bit-exact scalar fallback) batched 2D samplers in `<ttypt/chaff.h>`.
 * `noise_point_n(p, seed, shift, dim)`: Generic $N$-dimensional zero-allocation point query ($N \in [1..4]$).
 * `noise_wpoint_n_periodic(p, shift, w, seed, dim, flags, period_shift)`: Two's complement wrapping and periodic point query.
+* `noise_hash2_4x(...)`, `noise_wfade5_4x(...)`, `noise_wstep_4x(...)`, `noise_wpoint_2d_4x(...)`: 4-wide SIMD/scalar 2D primitives in `<ttypt/noise.h>`.
 
 #### High-Throughput Matrix & Region Steppers
 * `chaff_fill(field, lo, hi, origin, step_q16, n, out, stride, mode)`: Primary fixed-point multi-layer region generator.

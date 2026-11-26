@@ -27,8 +27,8 @@
    - Uses Perlin's quintic fade curve ($6t^5 - 15t^4 + 10t^3$) in fixed-point integer math to eliminate slope creases and Mach banding across lattice cell boundaries.
 3. **Hypercube Forward-Difference Matrix Stepping (`chaffOctaves` / `noiseOctaves`)**:
    - Precomputes step deltas across hypercube axes so intermediate grid cells are evaluated with single-cycle register additions rather than per-pixel corner hashing (10×–15× faster chunk synthesis).
-4. **Analytical Gradients, Slice Stepping, Thread-Local Cell Caching & Anti-Resonance FBM (C / WASM)**:
-   - Provides $O(1)$ analytical surface normal derivatives (`chaff_sample_grad_2d/3d/4d`), 2D/3D slice stepping across 3D/4D fields (`chaff_fill_slice_3d/4d`), golden-ratio domain rotation (`chaff_fbm_rotated_2d`) with thread-local (`_Thread_local`) 4-corner lattice cell caching, and seamless two's-complement toroidal wrapping.
+4. **Analytical Gradients, 4-Wide SIMD 2D Batching, Thread-Local Cell Caching & Anti-Resonance FBM (C / WASM)**:
+   - Provides $O(1)$ analytical surface normal derivatives (`chaff_sample_grad_2d/3d/4d`), 2D/3D slice stepping across 3D/4D fields (`chaff_fill_slice_3d/4d`), golden-ratio domain rotation (`chaff_fbm_rotated_2d`) with thread-local (`_CHAFF_TLS`) 4-corner lattice cell caching, 4-wide SIMD (`__wasm_simd128__` + bit-exact scalar fallback) 2D samplers (`chaff_wpoint_periodic_2d_4x`, `chaff_fbm_rotated_2d_4x`, `chaff_grad_noise2d_4x`, `noise_wpoint_2d_4x`), a 512-entry `fade5` LUT, VLA-free `dim == 2` fast paths, and seamless two's-complement toroidal wrapping.
 
 ---
 
